@@ -17,12 +17,15 @@ agent:
 
     <tool_call>
     <function=FUNCTION_NAME>
+    <parameter=PARAM_NAME>
     argument_here
+    </parameter>
     </function>
     </tool_call>
     ```
 
     Where FUNCTION_NAME is one of: subagent, stats, bash, commit
+    Parameter names: count (for subagent), command (for bash), answer (for commit), none (for stats)
 
     Failure to follow these rules will cause your response to be rejected.
 
@@ -67,20 +70,24 @@ agent:
     ## Available Actions
 
     ### 1. Call Parallel Sub-Agents
-    
+
     <tool_call>
     <function=subagent>
+    <parameter=count>
     <number_of_agents>
+    </parameter>
     </function>
     </tool_call>
-    
+
     Spawns N parallel agents (1 to {{max_attempts}}). Each receives:
     "Please reason step by step, and put your final answer within \\boxed{}."
-    
+
     Example:
     <tool_call>
     <function=subagent>
+    <parameter=count>
     32
+    </parameter>
     </function>
     </tool_call>
 
@@ -103,62 +110,78 @@ agent:
     ```
 
     ### 3. Inspect Specific Responses
-    
+
     <tool_call>
     <function=bash>
+    <parameter=command>
     <any_bash_command>
+    </parameter>
     </function>
     </tool_call>
-    
+
     Useful commands:
-    
+
     View full response of agent 3:
     <tool_call>
     <function=bash>
+    <parameter=command>
     cat 3.txt
+    </parameter>
     </function>
     </tool_call>
-    
+
     View only the actual response (skip <think> section):
     <tool_call>
     <function=bash>
+    <parameter=command>
     sed -n '/<\/think>/,$p' 3.txt | tail -n +2
+    </parameter>
     </function>
     </tool_call>
-    
+
     View last 20 lines (usually contains the answer):
     <tool_call>
     <function=bash>
+    <parameter=command>
     tail -n 20 3.txt
+    </parameter>
     </function>
     </tool_call>
-    
+
     Compare multiple minority answers:
     <tool_call>
     <function=bash>
+    <parameter=command>
     tail -n 10 15.txt 16.txt 17.txt
+    </parameter>
     </function>
     </tool_call>
-    
+
     Search for the boxed answer:
     <tool_call>
     <function=bash>
+    <parameter=command>
     grep -A 2 "boxed" 5.txt
+    </parameter>
     </function>
     </tool_call>
 
     ### 4. Submit Final Answer
-    
+
     <tool_call>
     <function=commit>
+    <parameter=answer>
     <your_final_answer>
+    </parameter>
     </function>
     </tool_call>
-    
+
     Example:
     <tool_call>
     <function=commit>
+    <parameter=answer>
     60
+    </parameter>
     </function>
     </tool_call>
 
@@ -174,10 +197,12 @@ agent:
     ### Example of a Simple Problem
     ```
     THOUGHT: This is a simple arithmetic problem (2+2). One agent is sufficient.
-    
+
     <tool_call>
     <function=subagent>
+    <parameter=count>
     1
+    </parameter>
     </function>
     </tool_call>
     ```
@@ -185,10 +210,12 @@ agent:
     ### Example of a Standard Problem
     ```
     THOUGHT: This is a standard AIME-level problem with clear solution paths. I'll spawn 16 agents for reliable consensus.
-    
+
     <tool_call>
     <function=subagent>
+    <parameter=count>
     16
+    </parameter>
     </function>
     </tool_call>
     ```
@@ -196,7 +223,7 @@ agent:
     ### Example of Reviewing Answer distribution
     ```
     THOUGHT: The agents have completed. Let me check the answer distribution.
-    
+
     <tool_call>
     <function=stats>
     </function>
@@ -206,10 +233,12 @@ agent:
     ### Example of Inspecting Minority Responses
     ```
     THOUGHT: The stats show 15 agents got 60, but 3 agents got 24. Before committing, I should examine the minority reasoning to ensure they didn't catch an edge case the majority missed.
-    
+
     <tool_call>
     <function=bash>
+    <parameter=command>
     tail -n 30 15.txt 16.txt 17.txt
+    </parameter>
     </function>
     </tool_call>
     ```
@@ -217,10 +246,12 @@ agent:
     ### Example of Inspecting a Specific Outlier Response
     ```
     THOUGHT: Agent 18 got 980 which is very different. Let me check if this is a calculation error or a different interpretation of the problem.
-    
+
     <tool_call>
     <function=bash>
+    <parameter=command>
     cat 18.txt
+    </parameter>
     </function>
     </tool_call>
     ```
@@ -228,10 +259,12 @@ agent:
     ### Example of Verifying Majority Reasoning
     ```
     THOUGHT: The majority got 60. Let me verify the reasoning of one majority answer to ensure it's sound before committing.
-    
+
     <tool_call>
     <function=bash>
+    <parameter=command>
     tail -n 25 0.txt
+    </parameter>
     </function>
     </tool_call>
     ```
@@ -239,15 +272,17 @@ agent:
     ### Example of Committing Final Answer
     ```
     THOUGHT: After reviewing the minority answers, they made an error in interpreting the problem constraints. The majority answer of 60 is correct with sound reasoning across 15 agents.
-    
+
     <tool_call>
     <function=commit>
+    <parameter=answer>
     60
+    </parameter>
     </function>
     </tool_call>
     ```
 
-    Final Reminder: Please refrain from the desire of trying to reason about the problem yourself. Please adhere to the response format strictly.
+    Final Reminder: Please refrain from the desire of trying to reason about the problem yourself. Please adhere to the response format strictly. You will first output your THOUGHT process, then choose one of the four actions/tools to proceed. Please note that your THOUGHT is required for every response, and is independent from tool calls.
 
   action_observation_template: |
     <returncode>{{output.returncode}}</returncode>
@@ -282,12 +317,14 @@ agent:
 
     <tool_call>
     <function=action_type>
+    <parameter=param_name>
     action_content
+    </parameter>
     </function>
     </tool_call>
     ```
 
-    Valid function types: bash, subagent, stats, commit
+    Valid function types: bash (parameter=command), subagent (parameter=count), stats (no parameter), commit (parameter=answer)
 
   timeout_template: |
     TIMEOUT: Command exceeded time limit and was killed.

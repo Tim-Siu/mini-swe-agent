@@ -61,24 +61,38 @@ class TTSAgent(DefaultAgent):
     def parse_action(self, response: dict) -> dict:
         """Extract action type and content from response.
 
-        Matches XML-style tool calls:
+        Matches XML-style tool calls with parameters:
         <tool_call>
         <function=bash|subagent|stats|commit>
+        <parameter=PARAM_NAME>
         content
+        </parameter>
         </function>
         </tool_call>
         """
         content = response["content"]
 
-        # Match: <tool_call><function=TYPE>CONTENT</function></tool_call>
+        # Match: <tool_call><function=TYPE>...<parameter=NAME>CONTENT</parameter>...</function></tool_call>
+        # or for stats: <tool_call><function=stats></function></tool_call> (no parameter)
         pattern = r"<tool_call>\s*<function=(bash|subagent|stats|commit)>\s*(.*?)\s*</function>\s*</tool_call>"
         matches = re.findall(pattern, content, re.DOTALL)
 
         if len(matches) == 1:
-            action_type, action_content = matches[0]
+            action_type, inner_content = matches[0]
+
+            # Extract parameter value if present
+            param_pattern = r"<parameter=\w+>\s*(.*?)\s*</parameter>"
+            param_matches = re.findall(param_pattern, inner_content, re.DOTALL)
+
+            if param_matches:
+                action_content = param_matches[0].strip()
+            else:
+                # For stats or other parameterless calls
+                action_content = inner_content.strip()
+
             return {
                 "type": action_type,
-                "action": action_content.strip(),
+                "action": action_content,
                 **response,
             }
 
