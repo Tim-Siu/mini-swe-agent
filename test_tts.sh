@@ -5,7 +5,7 @@ set -e
 # Configuration
 RESPONSE_JSONL="/Users/tim/Documents/research/trustworthy/output_rollouts/nemotron-nano-30b/aime2025-test-temp_1.0-top_p_1.0-top_k_-1-seed_0-20251231-102840_a100_128k.jsonl"
 OUTPUT_DIR="./tts_test_output_v4"
-QUESTION_ID="12"
+QUESTION_ID="13"
 
 # Set your NVIDIA API key here (or export it before running)
 export MSWEA_MODEL_API_KEY="${MSWEA_MODEL_API_KEY:-nvapi-YOUR_KEY_HERE}"

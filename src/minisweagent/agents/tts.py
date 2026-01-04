@@ -101,8 +101,14 @@ class TTSAgent(DefaultAgent):
         else:
             raise FormatError(f"Unknown action type: {action_type}")
 
+    def _extract_answer(self, response: str) -> str:
+        """Extract the last \\boxed{} answer from a response."""
+        pattern = r"\\boxed\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}"
+        matches = re.findall(pattern, response)
+        return matches[-1] if matches else "NO_ANSWER"
+
     def _execute_subagent(self, action: dict) -> dict:
-        """Sample and write N sub-agent responses to files."""
+        """Sample and write N sub-agent responses to files, sorted by answer frequency."""
         try:
             n = int(action["action"])
         except ValueError:
@@ -130,8 +136,21 @@ class TTSAgent(DefaultAgent):
                 "action": action["action"],
             }
 
-        # Write responses to files
-        for i, resp in enumerate(responses):
+        # Extract answers and pair with responses
+        responses_with_answers = [
+            (resp, self._extract_answer(resp)) for resp in responses
+        ]
+
+        # Count answer frequencies
+        answer_counts = Counter(ans for _, ans in responses_with_answers)
+
+        # Sort responses by answer frequency (most common first), then by answer for stability
+        responses_with_answers.sort(
+            key=lambda x: (-answer_counts[x[1]], x[1])
+        )
+
+        # Write responses to files in sorted order
+        for i, (resp, _) in enumerate(responses_with_answers):
             path = Path(self.working_dir) / f"{i}.txt"
             path.write_text(resp)
 
