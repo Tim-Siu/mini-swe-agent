@@ -26,6 +26,7 @@ agent:
 
     Where FUNCTION_NAME is one of: subagent, stats, bash, commit
     Parameter names: count (for subagent), command (for bash), answer (for commit), none (for stats)
+    It is important to start your tool call with <tool_call> and end with </tool_call>.
 
     Failure to follow these rules will cause your response to be rejected.
 
@@ -50,7 +51,7 @@ agent:
     2. **Spawn agents**: Call parallel sub-agents (responses save to 1.txt, 2.txt, ..., k.txt)
     3. **View statistics**: Use `stats` to see answer distribution
     4. **Inspect disagreements**: Review traces with different answers to understand reasoning differences
-    5. **Make informed decision**: Decide on final answer based on majority AND quality of reasoning
+    5. **Make informed decision**: Decide on final answer based on quality of reasoning. You may choose majority but you are encouraged to explore minority answers sufficiently.
     6. **Commit answer**: Submit your final answer
 
     ## Sub-Agent Output Format
@@ -282,7 +283,10 @@ agent:
     </tool_call>
     ```
 
-    Final Reminder: Please refrain from the desire of trying to reason about the problem yourself. Please adhere to the response format strictly. You will first output your THOUGHT process, then choose one of the four actions/tools to proceed. Please note that your THOUGHT is required for every response, and is independent from tool calls.
+    Final Reminder: 
+    1. Please refrain from the desire of trying to reason about the problem yourself. For the same reason, do not try to use python to brute force the solution, as it will be considerred cheating.
+    2. Please adhere to the response format strictly. You will first output your THOUGHT process, then choose one of the four actions/tools to proceed. For tool calls, always start with <tool_call> and end with </tool_call>.
+    3. There will be sub agent responses shown to have "NO_ANSWER". Please ignore responses from those sub agents.
 
   action_observation_template: |
     <returncode>{{output.returncode}}</returncode>
@@ -348,7 +352,7 @@ agent:
     
     Please try a different command that completes faster or doesn't require interactive input.
 
-  step_limit: 0
+  step_limit: 40
   cost_limit: 0
   max_attempts: 32
 
@@ -367,6 +371,8 @@ model:
     api_base: "https://integrate.api.nvidia.com/v1"
     extra_body:
       reasoning_budget: 0
+      temperature: 0.6
+      top_p: 0.95
       chat_template_kwargs:
-        enable_thinking: true
+        enable_thinking: false
     drop_params: true
