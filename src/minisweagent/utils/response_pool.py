@@ -1,5 +1,6 @@
 """Response pool for managing pre-computed LLM responses."""
 
+import glob
 import json
 import random
 from collections import defaultdict
@@ -9,11 +10,15 @@ from pathlib import Path
 class ResponsePool:
     """Manages pre-computed LLM responses for sampling in TTS evaluation."""
 
-    def __init__(self, jsonl_path: str | Path, seed: int = 42):
+    def __init__(self, jsonl_path: str | Path | list[str | Path], seed: int = 42):
         """Initialize the response pool.
 
         Args:
-            jsonl_path: Path to JSONL file with pre-computed responses.
+            jsonl_path: Path(s) to JSONL file(s) with pre-computed responses.
+                Can be:
+                - Single path: "responses.jsonl"
+                - Glob pattern: "responses_seed_*.jsonl"
+                - List of paths: ["seed_0.jsonl", "seed_1.jsonl"]
                 Each line should have: question_id, generation_id, vanilla_response,
                 question, gold_answer
             seed: Random seed for reproducible sampling.
@@ -21,27 +26,53 @@ class ResponsePool:
         self.responses: dict[int, list[str]] = defaultdict(list)
         self.questions: dict[int, str] = {}
         self.gold_answers: dict[int, str] = {}
+        self.loaded_files: list[Path] = []
         self._load(jsonl_path)
         self.rng = random.Random(seed)
 
-    def _load(self, jsonl_path: str | Path):
-        """Load and group responses by question_id."""
-        jsonl_path = Path(jsonl_path)
-        if not jsonl_path.exists():
-            raise FileNotFoundError(f"Response file not found: {jsonl_path}")
+    def _resolve_paths(self, jsonl_path: str | Path | list[str | Path]) -> list[Path]:
+        """Resolve input to list of file paths, expanding globs if needed."""
+        # Handle list input
+        if isinstance(jsonl_path, list):
+            paths = [Path(p) for p in jsonl_path]
+        else:
+            # Handle single path/pattern
+            path_str = str(jsonl_path)
+            # Check if it contains glob patterns
+            if any(char in path_str for char in ['*', '?', '[', ']']):
+                # Expand glob pattern
+                matched = glob.glob(path_str)
+                if not matched:
+                    raise FileNotFoundError(f"No files matched pattern: {path_str}")
+                paths = [Path(p) for p in sorted(matched)]
+            else:
+                paths = [Path(jsonl_path)]
 
-        with open(jsonl_path) as f:
-            for line in f:
-                row = json.loads(line)
-                qid = row["question_id"]
+        # Validate all paths exist
+        for path in paths:
+            if not path.exists():
+                raise FileNotFoundError(f"Response file not found: {path}")
 
-                # Store the response text
-                self.responses[qid].append(row["vanilla_response"])
+        return paths
 
-                # Store question and gold answer (same for all responses of a question)
-                if qid not in self.questions:
-                    self.questions[qid] = row["question"]
-                    self.gold_answers[qid] = str(row["gold_answer"])
+    def _load(self, jsonl_path: str | Path | list[str | Path]):
+        """Load and group responses by question_id from one or more files."""
+        paths = self._resolve_paths(jsonl_path)
+        self.loaded_files = paths
+
+        for path in paths:
+            with open(path) as f:
+                for line in f:
+                    row = json.loads(line)
+                    qid = row["question_id"]
+
+                    # Store the response text
+                    self.responses[qid].append(row["vanilla_response"])
+
+                    # Store question and gold answer (same for all responses of a question)
+                    if qid not in self.questions:
+                        self.questions[qid] = row["question"]
+                        self.gold_answers[qid] = str(row["gold_answer"])
 
         # Convert to regular dict for consistent ordering
         self.responses = dict(self.responses)
@@ -90,4 +121,5 @@ class ResponsePool:
     def __repr__(self) -> str:
         n_questions = len(self.questions)
         n_responses = sum(len(r) for r in self.responses.values())
-        return f"ResponsePool({n_questions} questions, {n_responses} total responses)"
+        n_files = len(self.loaded_files)
+        return f"ResponsePool({n_questions} questions, {n_responses} total responses from {n_files} file(s))"

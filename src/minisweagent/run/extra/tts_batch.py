@@ -13,7 +13,7 @@ import typer
 import yaml
 from rich.live import Live
 
-from minisweagent.agents.tts import TTSAgent
+from minisweagent.agents.tts import TTSAgent, TTSAgentV11
 from minisweagent.config import get_config_path
 from minisweagent.environments.local import LocalEnvironment
 from minisweagent.models import get_model
@@ -38,27 +38,32 @@ app = typer.Typer(rich_markup_mode="rich", add_completion=False)
 _OUTPUT_FILE_LOCK = threading.Lock()
 
 
-class ProgressTrackingTTSAgent(TTSAgent):
-    """TTS Agent wrapper that provides progress updates."""
+def create_progress_tracking_agent_class(base_class):
+    """Factory to create ProgressTrackingTTSAgent with a specific base class."""
 
-    def __init__(
-        self,
-        *args,
-        progress_manager: RunBatchProgressManager,
-        instance_id: str = "",
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self.progress_manager = progress_manager
-        self.instance_id = instance_id
+    class ProgressTrackingTTSAgent(base_class):
+        """TTS Agent wrapper that provides progress updates."""
 
-    def step(self) -> dict:
-        """Override step to provide progress updates."""
-        self.progress_manager.update_instance_status(
-            self.instance_id,
-            f"Step {self.model.n_calls + 1:3d} (${self.model.cost:.2f})",
-        )
-        return super().step()
+        def __init__(
+            self,
+            *args,
+            progress_manager: RunBatchProgressManager,
+            instance_id: str = "",
+            **kwargs,
+        ):
+            super().__init__(*args, **kwargs)
+            self.progress_manager = progress_manager
+            self.instance_id = instance_id
+
+        def step(self) -> dict:
+            """Override step to provide progress updates."""
+            self.progress_manager.update_instance_status(
+                self.instance_id,
+                f"Step {self.model.n_calls + 1:3d} (${self.model.cost:.2f})",
+            )
+            return super().step()
+
+    return ProgressTrackingTTSAgent
 
 
 def update_preds_file(
@@ -102,6 +107,7 @@ def process_question(
     output_dir: Path,
     config: dict,
     progress_manager: RunBatchProgressManager,
+    agent_class,
 ) -> None:
     """Process a single question with TTS."""
     instance_id = f"question_{question_id}"
@@ -126,7 +132,7 @@ def process_question(
     result = None
 
     try:
-        agent = ProgressTrackingTTSAgent(
+        agent = agent_class(
             model,
             env,
             response_pool=response_pool,
@@ -242,6 +248,15 @@ def main(
     if model is not None:
         config.setdefault("model", {})["model_name"] = model
 
+    # Determine agent class based on config filename
+    config_name = config_path.stem  # e.g., "tts" or "tts-v11"
+    if "v11" in config_name:
+        logger.info("Using TTSAgentV11 (stats auto-return enabled)")
+        agent_class = create_progress_tracking_agent_class(TTSAgentV11)
+    else:
+        logger.info("Using TTSAgent (classic mode)")
+        agent_class = create_progress_tracking_agent_class(TTSAgent)
+
     # Setup progress manager
     progress_manager = RunBatchProgressManager(
         len(qids),
@@ -269,6 +284,7 @@ def main(
                     output_dir,
                     config,
                     progress_manager,
+                    agent_class,
                 ): qid
                 for qid in qids
             }

@@ -262,3 +262,54 @@ class TTSAgent(DefaultAgent):
             self.cleanup()
         except Exception:
             pass
+
+
+class TTSAgentV11(TTSAgent):
+    """TTS Agent V11 - Automatically returns stats after spawning subagents.
+
+    This version simplifies the workflow by automatically displaying answer
+    statistics immediately after spawning parallel subagents, eliminating the
+    need for a separate stats tool call.
+    """
+
+    def _execute_subagent(self, action: dict) -> dict:
+        """Sample and write N sub-agent responses, then automatically show stats."""
+        # First, execute the regular subagent spawning
+        result = super()._execute_subagent(action)
+
+        # If spawning failed, return the error
+        if result["returncode"] != 0:
+            return result
+
+        # Now automatically generate and append stats
+        stats_result = self._execute_stats(action)
+
+        # Combine the outputs
+        combined_output = result["output"]
+        if stats_result["returncode"] == 0:
+            combined_output += "\n\nAnswer Statistics:\n" + stats_result["output"]
+        else:
+            # If stats somehow failed, just note it
+            combined_output += "\n\n(Note: Could not generate statistics)"
+
+        return {
+            "output": combined_output,
+            "returncode": result["returncode"],
+            "action": result["action"],
+        }
+
+    def execute_action(self, action: dict) -> dict:
+        """Route to appropriate action handler, excluding stats tool."""
+        action_type = action["type"]
+
+        if action_type == "commit":
+            raise Submitted(action["action"])
+        elif action_type == "subagent":
+            return self._execute_subagent(action)
+        elif action_type == "stats":
+            # In v11, stats is not a separate tool
+            raise FormatError("stats is not available in v11. Stats are automatically shown after spawning subagents.")
+        elif action_type == "bash":
+            return self._execute_bash(action)
+        else:
+            raise FormatError(f"Unknown action type: {action_type}")
