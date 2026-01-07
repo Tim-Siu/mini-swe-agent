@@ -333,9 +333,9 @@ agent:
 
     Try a faster command or avoid interactive input.
 
-  step_limit: 50
+  step_limit: 80
   cost_limit: 0
-  max_attempts: 128
+  max_attempts: 64
 
 environment:
   env:
