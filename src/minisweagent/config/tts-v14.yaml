@@ -1,3 +1,12 @@
+# TTS v14 Configuration
+#
+# This version is identical to v13 in terms of prompts, but supports "forced budget mode"
+# via the --force-budget CLI parameter. When enabled, the agent's first turn is overridden
+# with a templated response that spawns a fixed number of agents, allowing the agent to
+# start reasoning from the second turn onwards.
+#
+# Usage: mini-extra tts-batch ... --config tts-v14.yaml --force-budget 128
+
 agent:
   system_template: |
     You are an orchestrator agent that coordinates parallel sub-agents to solve problems through test-time scaling.

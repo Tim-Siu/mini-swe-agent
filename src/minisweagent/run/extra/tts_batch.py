@@ -207,6 +207,7 @@ def main(
     seed: int = typer.Option(42, "-s", "--seed", help="Random seed for response sampling"),
     model: str | None = typer.Option(None, "-m", "--model", help="Override model name"),
     redo_existing: bool = typer.Option(False, "--redo-existing", help="Redo existing questions"),
+    force_budget: int | None = typer.Option(None, "--force-budget", help="Force agent to spawn N agents in first turn"),
 ) -> None:
     # fmt: on
     """Run TTS evaluation on math problems."""
@@ -247,6 +248,10 @@ def main(
 
     if model is not None:
         config.setdefault("model", {})["model_name"] = model
+
+    if force_budget is not None:
+        config.setdefault("agent", {})["forced_budget"] = force_budget
+        logger.info(f"Forced budget mode enabled: spawning {force_budget} agents on first turn")
 
     # Always use TTSAgentV11 (stats auto-return enabled)
     logger.info("Using TTSAgentV11 (stats auto-return enabled)")

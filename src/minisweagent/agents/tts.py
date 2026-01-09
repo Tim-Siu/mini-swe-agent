@@ -270,7 +270,55 @@ class TTSAgentV11(TTSAgent):
     This version simplifies the workflow by automatically displaying answer
     statistics immediately after spawning parallel subagents, eliminating the
     need for a separate stats tool call.
+
+    Supports forced budget mode where the first turn is overridden with a
+    templated response that spawns a fixed number of agents.
     """
+
+    def __init__(
+        self,
+        model,
+        env,
+        response_pool: ResponsePool,
+        question_id: int,
+        forced_budget: int | None = None,
+        **kwargs,
+    ):
+        """Initialize TTS agent V11.
+
+        Args:
+            model: The LLM model for orchestration decisions.
+            env: The execution environment.
+            response_pool: Pool of pre-computed sub-agent responses.
+            question_id: ID of the question being solved.
+            forced_budget: If set, override first turn to spawn this many agents.
+            **kwargs: Additional config arguments.
+        """
+        super().__init__(model, env, response_pool, question_id, **kwargs)
+        self.forced_budget = forced_budget
+        self._first_turn_injected = False
+
+    def step(self) -> dict:
+        """Execute one agent step, with optional first-turn injection."""
+        # Inject forced budget on first turn if configured
+        if not self._first_turn_injected and self.forced_budget is not None:
+            self._first_turn_injected = True
+            return self._inject_forced_first_turn()
+        return super().step()
+
+    def _inject_forced_first_turn(self) -> dict:
+        """Inject a templated first turn that spawns the forced budget."""
+        # Create templated response with generic THOUGHT
+        forced_response = {
+            "content": f"THOUGHT: Spawning agents to solve this problem.\n\n<tool_call>\n<function=subagent>\n<parameter=count>\n{self.forced_budget}\n</parameter>\n</function>\n</tool_call>",
+            "extra": {"usage": {}},  # No actual model call
+        }
+
+        # Add as assistant message
+        self.add_message("assistant", **forced_response)
+
+        # Parse and execute the action
+        return self.get_observation(forced_response)
 
     def _execute_subagent(self, action: dict) -> dict:
         """Sample and write N sub-agent responses, then automatically show stats."""
