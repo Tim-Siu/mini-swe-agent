@@ -248,14 +248,9 @@ def main(
     if model is not None:
         config.setdefault("model", {})["model_name"] = model
 
-    # Determine agent class based on config filename
-    config_name = config_path.stem  # e.g., "tts" or "tts-v11"
-    if "v11" in config_name:
-        logger.info("Using TTSAgentV11 (stats auto-return enabled)")
-        agent_class = create_progress_tracking_agent_class(TTSAgentV11)
-    else:
-        logger.info("Using TTSAgent (classic mode)")
-        agent_class = create_progress_tracking_agent_class(TTSAgent)
+    # Always use TTSAgentV11 (stats auto-return enabled)
+    logger.info("Using TTSAgentV11 (stats auto-return enabled)")
+    agent_class = create_progress_tracking_agent_class(TTSAgentV11)
 
     # Setup progress manager
     progress_manager = RunBatchProgressManager(

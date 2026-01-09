@@ -20,6 +20,8 @@ class AgentConfig(BaseModel):
     action_regex: str = r"```bash\s*\n(.*?)\n```"
     step_limit: int = 0
     cost_limit: float = 3.0
+    max_step_warning_enabled: bool = False
+    max_step_warning_template: str = ""
 
 
 class NonTerminatingException(Exception):
@@ -53,6 +55,7 @@ class DefaultAgent:
         self.model = model
         self.env = env
         self.extra_template_vars = {}
+        self._max_step_warning_sent = False
 
     def render_template(self, template: str, **kwargs) -> str:
         template_vars = self.config.model_dump() | self.env.get_template_vars() | self.model.get_template_vars()
@@ -84,8 +87,23 @@ class DefaultAgent:
 
     def query(self) -> dict:
         """Query the model and return the response."""
-        if 0 < self.config.step_limit <= self.model.n_calls or 0 < self.config.cost_limit <= self.model.cost:
+        # Check if we've reached step limit
+        step_limit_reached = 0 < self.config.step_limit <= self.model.n_calls
+        cost_limit_reached = 0 < self.config.cost_limit <= self.model.cost
+
+        # If max step warning is enabled and we haven't sent it yet, send the warning
+        if (step_limit_reached and
+            self.config.max_step_warning_enabled and
+            not self._max_step_warning_sent and
+            self.config.max_step_warning_template):
+            self._max_step_warning_sent = True
+            warning_message = self.render_template(self.config.max_step_warning_template)
+            self.add_message("user", warning_message)
+            # Continue to allow the agent to respond to the warning
+        elif step_limit_reached or cost_limit_reached:
+            # Either warning is disabled, already sent, or cost limit reached
             raise LimitsExceeded()
+
         response = self.model.query(self.messages)
         self.add_message("assistant", **response)
         return response
