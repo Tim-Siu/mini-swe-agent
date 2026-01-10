@@ -14,6 +14,16 @@ from minisweagent.agents.default import (
     FormatError,
     Submitted,
 )
+
+
+class EarlyStopped(Exception):
+    """Raised when early stopping is triggered (no correct answer in sampled pool)."""
+
+    def __init__(self, message: str = "", metadata: dict | None = None):
+        super().__init__(message)
+        self.metadata = metadata or {}
+
+
 from minisweagent.utils.response_pool import ResponsePool
 
 
@@ -328,6 +338,34 @@ class TTSAgentV11(TTSAgent):
         # If spawning failed, return the error
         if result["returncode"] != 0:
             return result
+
+        # Check for early stopping: if no correct answer in sampled responses
+        gold_answer = self.response_pool.get_gold_answer(self.question_id)
+
+        # Extract answers from all spawned responses
+        sampled_answers = []
+        for i in range(self.spawned_count):
+            filepath = Path(self.working_dir) / f"{i}.txt"
+            if filepath.exists():
+                content = filepath.read_text()
+                answer = self._extract_answer(content)
+                sampled_answers.append(answer)
+
+        # Check if gold answer is in the sampled set
+        if gold_answer not in sampled_answers:
+            # Count answer distribution for metadata
+            answer_counts = Counter(sampled_answers)
+
+            # Raise early stop with metadata
+            raise EarlyStopped(
+                f"No correct answer found in {self.spawned_count} sampled responses",
+                metadata={
+                    "budget_used": self.spawned_count,
+                    "sampled_answers": dict(answer_counts),
+                    "gold_answer": gold_answer,
+                    "early_stop_reason": "no_correct_answer_in_sampled_responses",
+                }
+            )
 
         # Now automatically generate and append stats
         stats_result = self._execute_stats(action)

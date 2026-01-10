@@ -13,7 +13,7 @@ import typer
 import yaml
 from rich.live import Live
 
-from minisweagent.agents.tts import TTSAgent, TTSAgentV11
+from minisweagent.agents.tts import EarlyStopped, TTSAgent, TTSAgentV11
 from minisweagent.config import get_config_path
 from minisweagent.environments.local import LocalEnvironment
 from minisweagent.models import get_model
@@ -142,6 +142,14 @@ def process_question(
             **config.get("agent", {}),
         )
         exit_status, result = agent.run(question)
+    except EarlyStopped as e:
+        logger.info(f"Early stopped question {question_id}: {e}")
+        exit_status = "early_stopped"
+        result = ""  # No answer since we early stopped
+        extra_info = {
+            "early_stop_metadata": e.metadata,
+            "early_stop_message": str(e),
+        }
     except Exception as e:
         logger.error(f"Error processing question {question_id}: {e}", exc_info=True)
         exit_status, result = type(e).__name__, str(e)
