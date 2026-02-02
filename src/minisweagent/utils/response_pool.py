@@ -6,6 +6,8 @@ import random
 from collections import defaultdict
 from pathlib import Path
 
+from minisweagent.utils.grader import math_equal
+
 
 class ResponsePool:
     """Manages pre-computed LLM responses for sampling in TTS evaluation."""
@@ -20,12 +22,13 @@ class ResponsePool:
                 - Glob pattern: "responses_seed_*.jsonl"
                 - List of paths: ["seed_0.jsonl", "seed_1.jsonl"]
                 Each line should have: question_id, generation_id, vanilla_response,
-                question, gold_answer
+                question, gold_answer, label (correctness boolean)
             seed: Random seed for reproducible sampling.
         """
-        self.responses: dict[int, list[str]] = defaultdict(list)
+        self.responses: dict[int, list[tuple[str, bool]]] = defaultdict(list)
         self.questions: dict[int, str] = {}
         self.gold_answers: dict[int, str] = {}
+        self.correct_answers: dict[int, set[str]] = defaultdict(set)  # pred_answers where label=True
         self.loaded_files: list[Path] = []
         self._load(jsonl_path)
         self.rng = random.Random(seed)
@@ -66,8 +69,13 @@ class ResponsePool:
                     row = json.loads(line)
                     qid = row["question_id"]
 
-                    # Store the response text
-                    self.responses[qid].append(row["vanilla_response"])
+                    # Store the response text and its correctness label
+                    label = row.get("label", False)
+                    self.responses[qid].append((row["vanilla_response"], label))
+
+                    # Store correct pred_answers for final answer verification
+                    if label and "pred_answer" in row:
+                        self.correct_answers[qid].add(str(row["pred_answer"]))
 
                     # Store question and gold answer (same for all responses of a question)
                     if qid not in self.questions:
@@ -76,8 +84,9 @@ class ResponsePool:
 
         # Convert to regular dict for consistent ordering
         self.responses = dict(self.responses)
+        self.correct_answers = dict(self.correct_answers)
 
-    def sample(self, question_id: int, n: int) -> list[str]:
+    def sample(self, question_id: int, n: int) -> list[tuple[str, bool]]:
         """Sample n responses without replacement.
 
         Args:
@@ -85,7 +94,7 @@ class ResponsePool:
             n: Number of responses to sample.
 
         Returns:
-            List of response strings (vanilla_response field).
+            List of (response_text, label) tuples where label indicates correctness.
         """
         if question_id not in self.responses:
             raise KeyError(f"Question ID {question_id} not found in response pool")
@@ -113,6 +122,37 @@ class ResponsePool:
     def get_num_responses(self, question_id: int) -> int:
         """Get the number of available responses for a question."""
         return len(self.responses.get(question_id, []))
+
+    def has_correct_response(self, question_id: int) -> bool:
+        """Check if any response for this question is correct."""
+        if question_id not in self.responses:
+            return False
+        return any(label for _, label in self.responses[question_id])
+
+    def is_correct_answer(self, question_id: int, answer: str) -> bool:
+        """Check if the given answer is correct for this question.
+
+        Uses the same math_equal verification as eval.py:
+        1. First checks exact match against known correct pred_answers (fast path)
+        2. Falls back to sympy-based math_equal with gold_answer (handles equivalence)
+        """
+        answer_str = str(answer)
+
+        # Fast path: check if answer exactly matches a known correct pred_answer
+        if question_id in self.correct_answers:
+            if answer_str in self.correct_answers[question_id]:
+                return True
+
+        # Fall back to math_equal with gold answer (sympy-based equivalence check)
+        if question_id in self.gold_answers:
+            gold = self.gold_answers[question_id]
+            try:
+                return math_equal(answer_str, gold, timeout=True)
+            except Exception:
+                # If math_equal fails, fall back to string comparison
+                return answer_str.strip() == gold.strip()
+
+        return False
 
     def __len__(self) -> int:
         """Return total number of questions."""

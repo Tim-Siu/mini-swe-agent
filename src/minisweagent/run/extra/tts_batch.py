@@ -72,6 +72,7 @@ def update_preds_file(
     answer: str,
     gold: str,
     exit_status: str,
+    response_pool: ResponsePool,
 ):
     """Update the output JSON file with results from a single question."""
     with _OUTPUT_FILE_LOCK:
@@ -79,11 +80,14 @@ def update_preds_file(
         if output_path.exists():
             output_data = json.loads(output_path.read_text())
 
+        # Use pre-computed correct answers from rollout data instead of string matching
+        is_correct = response_pool.is_correct_answer(question_id, answer)
+
         output_data[str(question_id)] = {
             "question_id": question_id,
             "answer": answer,
             "gold": gold,
-            "correct": str(answer).strip() == str(gold).strip(),
+            "correct": is_correct,
             "exit_status": exit_status,
         }
         output_path.write_text(json.dumps(output_data, indent=2))
@@ -172,6 +176,7 @@ def process_question(
             result or "",
             gold,
             exit_status or "Unknown",
+            response_pool,
         )
         progress_manager.on_instance_end(instance_id, exit_status)
         if agent:

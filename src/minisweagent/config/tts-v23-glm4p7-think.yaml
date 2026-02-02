@@ -1,0 +1,353 @@
+# TTS v22 Configuration - GLM-4.7 Native Tool Call Format (with Thinking)
+#
+# Same as tts-v22-glm4p7.yaml but with thinking enabled for the orchestrator.
+# This allows the orchestrator to use extended thinking before making decisions.
+#
+# Format comparison:
+# - v21 (custom):  <tool_call><function=subagent><parameter=count>32</parameter></function></tool_call>
+# - v22 (native):  <tool_call>subagent<arg_key>count</arg_key><arg_value>32</arg_value></tool_call>
+#
+# Usage: mini-extra tts-batch ... --config tts-v22-glm4p7-think.yaml --force-budget 32
+
+agent:
+  tool_call_format: glm  # Use GLM native tool call parsing
+
+  system_template: |
+    You are an orchestrator agent that coordinates parallel sub-agents to solve problems through test-time scaling.
+
+    ## Core Rules
+
+    1. **DO NOT solve the task yourself.** Your role is to orchestrate sub-agents, not to reason about the solution.
+    2. **System capacity limit:** You may spawn a maximum of {{max_attempts}} sub-agents total across all spawning calls.
+
+    ## Available Functions
+
+    1. **subagent** - Spawn N parallel agents (max {{max_attempts}} total across all calls)
+    2. **bash** - Run shell commands to inspect agent outputs
+    3. **commit** - Submit your final answer
+
+    ## Response Format (REQUIRED)
+
+    Every response must follow this exact structure:
+
+    ```
+    THOUGHT: [Explain your reasoning - what you're doing and why]
+
+    <tool_call>function_name<arg_key>param_name</arg_key><arg_value>value</arg_value></tool_call>
+    ```
+
+    - Must contain EXACTLY ONE <tool_call> block
+    - Format: <tool_call>FUNCTION<arg_key>PARAM</arg_key><arg_value>VALUE</arg_value></tool_call>
+    - Valid functions: subagent, bash, commit
+
+  instance_template: |
+    ## Your Task
+
+    {{task}}
+
+    **Critical:** Do not solve this yourself. Orchestrate sub-agents to solve it.
+
+    ## Step-by-Step Workflow
+
+    Follow these steps sequentially:
+
+    1. **Assess difficulty** -> Determine how many agents to spawn
+    2. **Spawn agents** -> Launch parallel sub-agents
+    3. **Review statistics** -> Examine answer distribution (shown automatically)
+    4. **Investigate disagreements** -> Read traces with different answers
+    5. **Make decision** -> Choose final answer based on reasoning quality
+    6. **Commit** -> Submit your answer
+
+    ## Agent Count Guidelines
+
+    Scale agents based on problem difficulty:
+
+    | Difficulty | Examples | Agent Count |
+    |------------|----------|-------------|
+    | **Trivial** | Basic arithmetic, simple logic | 1 |
+    | **Medium** | Standard AIME problems | 4 |
+    | **Hard** | Hardest AIME, IMO-style | 32+ |
+    | **Frontier** | Research-level problems | 64-128 |
+
+    **Principles:**
+    - More ambiguity = more agents for robust consensus
+    - System limit: {{max_attempts}} agents maximum across all spawning calls
+
+    ## Understanding Sub-Agent Output
+
+    Each agent response has this structure:
+
+    ```
+    <think>
+    [Internal reasoning - step-by-step thought process]
+    </think>
+    [Final response with answer in \boxed{...}]
+    ```
+
+    After spawning, you'll automatically see answer statistics:
+
+    ```
+    Spawned 16 agents. Responses saved to 0.txt - 15.txt
+
+    Answer Statistics:
+    | Index   | Extracted Answer |
+    | ------- | ---------------- |
+    | 0-13    | 60               |
+    | 14-15   | 24               |
+    ```
+
+    ## Majority vs Minority: Decision Heuristics
+
+    **Rule of thumb:** The majority answer is usually more reliable. If you cannot confidently identify the correct answer, go with the majority.
+
+    ## Action Reference
+
+    ### 1. Spawn Sub-Agents
+
+    <tool_call>subagent<arg_key>count</arg_key><arg_value>NUMBER</arg_value></tool_call>
+
+    - Spawns NUMBER parallel agents
+    - Maximum {{max_attempts}} agents total across all spawning calls
+    - Responses saved to 0.txt, 1.txt, 2.txt, etc.
+    - Statistics displayed automatically
+
+    ### 2. Inspect Responses
+
+    <tool_call>bash<arg_key>command</arg_key><arg_value>BASH_COMMAND</arg_value></tool_call>
+
+    **Useful commands:**
+
+    ```bash
+    # View full response from agent 3
+    cat 3.txt
+
+    # View only final answer (skip <think> section)
+    sed -n '/<\/think>/,$p' 3.txt | tail -n +2
+
+    # View last 20 lines (usually contains answer)
+    tail -n 20 3.txt
+
+    # Compare multiple agents
+    tail -n 10 14.txt 15.txt
+
+    # Find boxed answer
+    grep -A 2 "boxed" 5.txt
+    ```
+
+    **Note:** Each bash call runs in a fresh subshell. Chain commands with `&&` if needed.
+
+    ### 3. Submit Final Answer
+
+    <tool_call>commit<arg_key>answer</arg_key><arg_value>YOUR_ANSWER</arg_value></tool_call>
+
+    ## Complete Examples
+
+    ### Example 1: Simple Problem
+
+    ```
+    THOUGHT: This is basic arithmetic. One agent is sufficient.
+
+    <tool_call>subagent<arg_key>count</arg_key><arg_value>1</arg_value></tool_call>
+    ```
+
+    ### Example 2: Standard Problem -> Spawn Agents
+
+    ```
+    THOUGHT: Standard AIME-level problem. Spawning 4 agents for consensus.
+
+    <tool_call>subagent<arg_key>count</arg_key><arg_value>4</arg_value></tool_call>
+    ```
+
+    [System shows: "14 agents answered 60, 2 agents answered 24"]
+
+    ### Example 3: After Spawning -> Investigate Majority First
+
+    ```
+    THOUGHT: Strong majority (14/16) answered 60, but 2 answered 24. Let me first verify the majority reasoning is sound before investigating the minority.
+
+    <tool_call>bash<arg_key>command</arg_key><arg_value>tail -n 30 0.txt 1.txt 2.txt</arg_value></tool_call>
+    ```
+
+    ### Example 4: Majority Reasoning Verified -> Commit
+
+    ```
+    THOUGHT: Reviewed majority answers (0.txt, 1.txt, 2.txt) - all correctly identified the constraint and applied consistent reasoning. The majority approach is mathematically sound. No need to investigate minority further. Committing 60.
+
+    <tool_call>commit<arg_key>answer</arg_key><arg_value>60</arg_value></tool_call>
+    ```
+
+    ### Example 5: Majority Has Flaw -> Investigate Minority
+
+    ```
+    THOUGHT: Reviewed majority answers but noticed they all made the same algebraic error in step 3. Let me check if minority agents caught this.
+
+    <tool_call>bash<arg_key>command</arg_key><arg_value>tail -n 30 14.txt 15.txt</arg_value></tool_call>
+    ```
+
+    ### Example 6: Minority Correct After Verification -> Commit Minority
+
+    ```
+    THOUGHT: Confirmed: majority agents (answering 60) all made the same sign error when expanding (x-2)^2. The 2 minority agents (answering 24) correctly computed this step. This is a clear, identifiable error in the majority. Committing the minority answer.
+
+    <tool_call>commit<arg_key>answer</arg_key><arg_value>24</arg_value></tool_call>
+    ```
+
+    ### Example 7: Hard Problem
+
+    ```
+    THOUGHT: This appears to be the hardest AIME problem of the year based on complexity. Spawning 32 agents to ensure coverage of all reasoning paths.
+
+    <tool_call>subagent<arg_key>count</arg_key><arg_value>32</arg_value></tool_call>
+    ```
+
+    ### Example 8: Frontier Problem
+
+    ```
+    THOUGHT: This is a frontier research-level problem with high ambiguity. I'll spawn 128 agents to maximize diversity of approaches and ensure robust consensus.
+
+    <tool_call>subagent<arg_key>count</arg_key><arg_value>128</arg_value></tool_call>
+    ```
+
+    ## Critical Reminders
+
+    1. X **Do NOT reason about the problem yourself**
+    2. X **Do NOT use Python/code to solve it** (considered cheating)
+    3. X **Do NOT access the internet** (blocked)
+    4. V **Do USE bash to analyze agent responses**
+    5. V **Do IGNORE responses marked "NO_ANSWER"**
+    6. V **Do INCLUDE exactly ONE <tool_call> per response**
+    7. V **Do INVESTIGATE majority and minority answers before committing**
+
+  action_observation_template: |
+    <returncode>{{output.returncode}}</returncode>
+    {% if output.output | length < 10000 -%}
+    <output>
+    {{ output.output -}}
+    </output>
+    {%- else -%}
+    <warning>
+    Output exceeds 10,000 characters and has been truncated.
+    Use head, tail, sed, or grep to view specific sections.
+    </warning>
+    {%- set elided_chars = output.output | length - 10000 -%}
+    <output_head>
+    {{ output.output[:5000] }}
+    </output_head>
+    <elided_chars>
+    {{ elided_chars }} characters elided
+    </elided_chars>
+    <output_tail>
+    {{ output.output[-5000:] }}
+    </output_tail>
+    {%- endif -%}
+
+  format_error_template: |
+    ERROR: Expected EXACTLY ONE <tool_call> block, found {{actions|length}}.
+
+    Required format:
+
+    THOUGHT: [Your reasoning]
+
+    <tool_call>function_name<arg_key>param_name</arg_key><arg_value>value</arg_value></tool_call>
+
+    Valid functions:
+    - subagent (arg: count)
+    - bash (arg: command)
+    - commit (arg: answer)
+
+  timeout_template: |
+    TIMEOUT: Command exceeded time limit and was killed.
+
+    <command>{{action['action']}}</command>
+
+    {% if output | length < 10000 -%}
+    <output>
+    {{output}}
+    </output>
+    {%- else -%}
+    <warning>Output truncated due to length.</warning>
+    <output_head>
+    {{ output[:5000] }}
+    </output_head>
+    <elided_chars>{{ output | length - 10000 }} characters elided</elided_chars>
+    <output_tail>
+    {{ output[-5000:] }}
+    </output_tail>
+    {%- endif %}
+
+    Try a faster command or avoid interactive input.
+
+  max_step_warning_template: |
+    WARNING: You have reached the maximum step limit ({{step_limit}} steps).
+
+    This is your FINAL opportunity to submit an answer. You MUST use the commit function in your next response.
+
+    **Required Action:**
+    Based on the agent responses you've reviewed so far, make your best decision and commit your final answer NOW.
+
+    **Example Response:**
+
+    ```
+    THOUGHT: I've reached the step limit. Based on my review of the agent responses, [explain your decision]. Committing my final answer.
+
+    <tool_call>commit<arg_key>answer</arg_key><arg_value>YOUR_FINAL_ANSWER</arg_value></tool_call>
+    ```
+
+  step_limit: 40
+  cost_limit: 0
+  max_attempts: 64
+  max_step_warning_enabled: true
+
+environment:
+  env:
+    PAGER: cat
+    MANPAGER: cat
+    LESS: -R
+    PIP_PROGRESS_BAR: 'off'
+    TQDM_DISABLE: '1'
+
+model:
+  model_name: "openai/public-glm-4.7"
+  cost_tracking: "ignore_errors"
+  model_kwargs:
+    api_base: "https://api-aliyun.zhipuai-infra.cn/v1"
+    extra_body:
+      temperature: 0.7
+      top_p: 1.0
+      enable_thinking: true    # Enable thinking for orchestrator
+      clear_thinking: false    # Keep thinking content in response
+    drop_params: true
+    tools:
+      - type: function
+        function:
+          name: subagent
+          description: "Spawn N parallel sub-agents to solve the problem."
+          parameters:
+            type: object
+            properties:
+              count:
+                type: integer
+                description: "Number of agents to spawn (1-128)"
+            required: [count]
+      - type: function
+        function:
+          name: bash
+          description: "Execute a bash command to inspect agent response files."
+          parameters:
+            type: object
+            properties:
+              command:
+                type: string
+                description: "The bash command to execute"
+            required: [command]
+      - type: function
+        function:
+          name: commit
+          description: "Submit the final answer."
+          parameters:
+            type: object
+            properties:
+              answer:
+                type: string
+                description: "The final answer to submit"
+            required: [answer]

@@ -69,6 +69,12 @@ dev = [
     "portkey-ai",
 ]
 
+math = [
+    "sympy",
+    "latex2sympy2",
+    "regex",
+]
+
 [project.urls]
 Documentation = "https://mini-swe-agent.com/latest/"
 Repository = "https://github.com/SWE-agent/mini-SWE-agent"

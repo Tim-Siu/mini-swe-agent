@@ -4,6 +4,11 @@ preds.json
 *.traj.json
 .env
 traj.json
+tmp/
+launch_scripts/
+atts-docs
+atts_rollout
+.claude
 
 # Created by https://www.toptal.com/developers/gitignore/api/python
 # Edit at https://www.toptal.com/developers/gitignore?templates=python
@@ -181,4 +186,3 @@ poetry.toml
 pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/python
-

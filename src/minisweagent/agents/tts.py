@@ -1,5 +1,6 @@
 """TTS (Test-Time Scaling) Agent for orchestrating sub-agent consensus."""
 
+import json
 import re
 import shutil
 import tempfile
@@ -31,6 +32,7 @@ class TTSAgentConfig(AgentConfig):
     """Extended config for TTS agent."""
 
     max_attempts: int = 32  # Maximum sub-agents to spawn
+    tool_call_format: str = "default"  # "default" or "glm"
 
 
 class TTSAgent(DefaultAgent):
@@ -71,7 +73,17 @@ class TTSAgent(DefaultAgent):
     def parse_action(self, response: dict) -> dict:
         """Extract action type and content from response.
 
-        Matches XML-style tool calls with parameters:
+        Dispatches to format-specific parser based on config.tool_call_format.
+        """
+        if self.config.tool_call_format == "glm":
+            return self._parse_action_glm(response)
+        else:
+            return self._parse_action_default(response)
+
+    def _parse_action_default(self, response: dict) -> dict:
+        """Parse default XML-style tool calls with parameters.
+
+        Matches:
         <tool_call>
         <function=bash|subagent|stats|commit>
         <parameter=PARAM_NAME>
@@ -99,6 +111,81 @@ class TTSAgent(DefaultAgent):
             else:
                 # For stats or other parameterless calls
                 action_content = inner_content.strip()
+
+            return {
+                "type": action_type,
+                "action": action_content,
+                **response,
+            }
+
+        raise FormatError(
+            self.render_template(self.config.format_error_template, actions=matches)
+        )
+
+    def _parse_action_glm(self, response: dict) -> dict:
+        """Parse GLM native tool call format.
+
+        First checks for structured tool_calls in the API response (OpenAI format),
+        then falls back to parsing text content for GLM's native XML format:
+        <tool_call>function_name<arg_key>key</arg_key><arg_value>value</arg_value></tool_call>
+        """
+        # First, check for structured tool_calls in the API response
+        # These are at response["extra"]["response"]["choices"][0]["message"]["tool_calls"]
+        try:
+            tool_calls = response.get("extra", {}).get("response", {}).get("choices", [{}])[0].get("message", {}).get("tool_calls")
+            if tool_calls and len(tool_calls) == 1:
+                tool_call = tool_calls[0]
+                # Handle both dict and object formats
+                if hasattr(tool_call, "function"):
+                    func = tool_call.function
+                    action_type = func.name if hasattr(func, "name") else func.get("name")
+                    args_str = func.arguments if hasattr(func, "arguments") else func.get("arguments", "{}")
+                else:
+                    func = tool_call.get("function", {})
+                    action_type = func.get("name")
+                    args_str = func.get("arguments", "{}")
+
+                # Parse arguments JSON
+                if isinstance(args_str, str):
+                    args = json.loads(args_str) if args_str else {}
+                else:
+                    args = args_str or {}
+
+                # Extract the first argument value (count, command, or answer)
+                if args:
+                    action_content = str(list(args.values())[0])
+                else:
+                    action_content = ""
+
+                if action_type in ("bash", "subagent", "stats", "commit"):
+                    return {
+                        "type": action_type,
+                        "action": action_content,
+                        **response,
+                    }
+        except (KeyError, IndexError, json.JSONDecodeError, TypeError):
+            pass  # Fall through to text parsing
+
+        # Fall back to parsing text content for GLM's native XML format
+        content = response.get("content", "")
+
+        # Match: <tool_call>FUNCTION_NAME<arg_key>...</arg_key><arg_value>...</arg_value>...</tool_call>
+        pattern = r"<tool_call>(bash|subagent|stats|commit)(.*?)</tool_call>"
+        matches = re.findall(pattern, content, re.DOTALL)
+
+        if len(matches) == 1:
+            action_type, args_content = matches[0]
+
+            # Extract argument value (we only care about the first arg_value for our tools)
+            arg_pattern = r"<arg_key>(\w+)</arg_key><arg_value>(.*?)</arg_value>"
+            arg_matches = re.findall(arg_pattern, args_content, re.DOTALL)
+
+            if arg_matches:
+                # Take the first argument's value
+                action_content = arg_matches[0][1].strip()
+            else:
+                # For parameterless calls like stats
+                action_content = ""
 
             return {
                 "type": action_type,
@@ -150,9 +237,9 @@ class TTSAgent(DefaultAgent):
                 "action": action["action"],
             }
 
-        # Sample responses from pool
+        # Sample responses from pool (returns list of (response_text, label) tuples)
         try:
-            responses = self.response_pool.sample(self.question_id, n)
+            sampled = self.response_pool.sample(self.question_id, n)
         except KeyError as e:
             return {
                 "output": f"Error: {e}",
@@ -160,13 +247,14 @@ class TTSAgent(DefaultAgent):
                 "action": action["action"],
             }
 
-        # Extract answers and pair with responses
+        # Extract answers and pair with responses and labels
+        # Format: (response_text, extracted_answer, label)
         responses_with_answers = [
-            (resp, self._extract_answer(resp)) for resp in responses
+            (resp, self._extract_answer(resp), label) for resp, label in sampled
         ]
 
         # Count answer frequencies
-        answer_counts = Counter(ans for _, ans in responses_with_answers)
+        answer_counts = Counter(ans for _, ans, _ in responses_with_answers)
 
         # Sort responses by answer frequency (most common first), then by answer for stability
         responses_with_answers.sort(
@@ -174,14 +262,17 @@ class TTSAgent(DefaultAgent):
         )
 
         # Write responses to files in sorted order
-        for i, (resp, _) in enumerate(responses_with_answers):
+        # Store labels for later use (e.g., early stopping)
+        self._sampled_labels = []
+        for i, (resp, _, label) in enumerate(responses_with_answers):
             path = Path(self.working_dir) / f"{i}.txt"
             path.write_text(resp)
+            self._sampled_labels.append(label)
 
-        self.spawned_count = len(responses)
+        self.spawned_count = len(sampled)
 
         return {
-            "output": f"Spawned {len(responses)} agents. Responses saved to 0.txt - {len(responses) - 1}.txt",
+            "output": f"Spawned {len(sampled)} agents. Responses saved to 0.txt - {len(sampled) - 1}.txt",
             "returncode": 0,
             "action": action["action"],
         }
@@ -319,8 +410,14 @@ class TTSAgentV11(TTSAgent):
     def _inject_forced_first_turn(self) -> dict:
         """Inject a templated first turn that spawns the forced budget."""
         # Create templated response with generic THOUGHT
+        # Use GLM format if configured, otherwise default format
+        if self.config.tool_call_format == "glm":
+            tool_call = f"<tool_call>subagent<arg_key>count</arg_key><arg_value>{self.forced_budget}</arg_value></tool_call>"
+        else:
+            tool_call = f"<tool_call>\n<function=subagent>\n<parameter=count>\n{self.forced_budget}\n</parameter>\n</function>\n</tool_call>"
+
         forced_response = {
-            "content": f"THOUGHT: Spawning agents to solve this problem.\n\n<tool_call>\n<function=subagent>\n<parameter=count>\n{self.forced_budget}\n</parameter>\n</function>\n</tool_call>",
+            "content": f"THOUGHT: Spawning agents to solve this problem.\n\n{tool_call}",
             "extra": {"usage": {}},  # No actual model call
         }
 
@@ -340,20 +437,18 @@ class TTSAgentV11(TTSAgent):
             return result
 
         # Check for early stopping: if no correct answer in sampled responses
-        gold_answer = self.response_pool.get_gold_answer(self.question_id)
+        # Use pre-computed labels from the rollout data (set by parent class)
+        has_correct = any(self._sampled_labels)
 
-        # Extract answers from all spawned responses
-        sampled_answers = []
-        for i in range(self.spawned_count):
-            filepath = Path(self.working_dir) / f"{i}.txt"
-            if filepath.exists():
-                content = filepath.read_text()
-                answer = self._extract_answer(content)
-                sampled_answers.append(answer)
-
-        # Check if gold answer is in the sampled set
-        if gold_answer not in sampled_answers:
+        if not has_correct:
             # Count answer distribution for metadata
+            sampled_answers = []
+            for i in range(self.spawned_count):
+                filepath = Path(self.working_dir) / f"{i}.txt"
+                if filepath.exists():
+                    content = filepath.read_text()
+                    answer = self._extract_answer(content)
+                    sampled_answers.append(answer)
             answer_counts = Counter(sampled_answers)
 
             # Raise early stop with metadata
@@ -362,7 +457,7 @@ class TTSAgentV11(TTSAgent):
                 metadata={
                     "budget_used": self.spawned_count,
                     "sampled_answers": dict(answer_counts),
-                    "gold_answer": gold_answer,
+                    "gold_answer": self.response_pool.get_gold_answer(self.question_id),
                     "early_stop_reason": "no_correct_answer_in_sampled_responses",
                 }
             )
