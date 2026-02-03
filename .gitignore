@@ -9,6 +9,7 @@ launch_scripts/
 atts-docs
 atts_rollout
 .claude
+datasets_processed/
 
 *_output/
 # Created by https://www.toptal.com/developers/gitignore/api/python
