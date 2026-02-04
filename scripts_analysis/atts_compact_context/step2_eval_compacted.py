@@ -206,16 +206,29 @@ def _evaluate_one(row: Dict[str, Any], args: argparse.Namespace, extra_body: Opt
             agreement = _safe_math_equal(answer, original_answer)
 
         usage = response.get("usage", {}) or {}
+        prompt_tokens = usage.get("prompt_tokens", 0) or 0
+        completion_tokens = usage.get("completion_tokens", 0) or 0
+        
+        # Runtime logging of token stats
+        logging.info(f"Q{qid}: prompt={prompt_tokens}, completion={completion_tokens}")
+
+        # Extract reasoning_content from response (for models like GLM that provide it)
+        reasoning_content = None
+        try:
+            reasoning_content = response["choices"][0]["message"].get("reasoning_content")
+        except (KeyError, IndexError, TypeError):
+            pass
 
         return {
             "question_id": qid,
             "status": "ok",
             "response_text": text,
+            "reasoning_content": reasoning_content,
             "answer": answer,
             "correct": correct,
             "agreement_with_original": agreement,
-            "prompt_tokens": usage.get("prompt_tokens"),
-            "completion_tokens": usage.get("completion_tokens"),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
             "total_tokens": usage.get("total_tokens"),
             "latency_sec": elapsed,
             "original_answer": original_answer,
