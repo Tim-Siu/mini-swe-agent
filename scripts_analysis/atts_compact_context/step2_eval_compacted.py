@@ -82,14 +82,34 @@ def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
 
 
 def _load_existing_ids(path: Path) -> set[int]:
+    """Load IDs of questions that are already processed (ok or early_stopped).
+    
+    On resume, error entries are removed from the file and their IDs are returned
+    for reprocessing.
+    """
     if not path.exists():
         return set()
-    ids = set()
+    
+    ok_rows = []
+    error_ids = set()
+    
     for row in _iter_jsonl(path):
         qid = row.get("question_id")
-        if qid is not None:
-            ids.add(int(qid))
-    return ids
+        if qid is None:
+            continue
+        status = row.get("status", "")
+        if status == "error":
+            error_ids.add(int(qid))
+        else:
+            ok_rows.append(row)
+    
+    # Rewrite file without error entries
+    if error_ids:
+        path.write_text("".join(json.dumps(r) + "\n" for r in ok_rows))
+        logging.info(f"Removed {len(error_ids)} error entries for reprocessing")
+    
+    # Return IDs that are already done (ok + early_stopped)
+    return set(int(r["question_id"]) for r in ok_rows if r.get("question_id") is not None)
 
 
 def _extract_answer(text: str) -> str:
