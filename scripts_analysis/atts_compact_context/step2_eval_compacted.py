@@ -161,6 +161,7 @@ def _call_llm(
     api_base: Optional[str] = None,
     api_key: Optional[str] = None,
     extra_body: Optional[Dict[str, Any]] = None,
+    question_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     try:
         import litellm  # type: ignore
@@ -192,7 +193,23 @@ def _call_llm(
     if extra_body:
         kwargs["extra_body"] = extra_body
 
-    return litellm.completion(**kwargs)
+    # Retry logic: 3 attempts total with exponential backoff
+    max_retries = 2
+    backoff_delays = [1.0, 2.0]  # delays in seconds after 1st and 2nd failure
+    
+    for attempt in range(max_retries + 1):
+        try:
+            return litellm.completion(**kwargs)
+        except Exception as e:
+            qid_str = f"Q{question_id}: " if question_id is not None else ""
+            if attempt < max_retries:
+                logging.warning(f"{qid_str}API call failed (attempt {attempt + 1}/{max_retries + 1}): {e}")
+                delay = backoff_delays[attempt]
+                logging.warning(f"{qid_str}Retrying in {delay}s...")
+                time.sleep(delay)
+            else:
+                logging.error(f"{qid_str}API call failed after {max_retries + 1} attempts: {e}")
+                raise
 
 def _evaluate_one(row: Dict[str, Any], args: argparse.Namespace, extra_body: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     qid = int(row["question_id"])
@@ -213,6 +230,7 @@ def _evaluate_one(row: Dict[str, Any], args: argparse.Namespace, extra_body: Opt
             api_base=args.api_base,
             api_key=args.api_key,
             extra_body=extra_body,
+            question_id=qid,
         )
         elapsed = time.time() - start
         text = response["choices"][0]["message"]["content"]
