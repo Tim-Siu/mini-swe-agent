@@ -352,6 +352,65 @@ class TextualAgent(App):
 
     # --- UI update logic ---
 
+    def _extract_reasoning_content(self, message: dict) -> str | None:
+        """Extract reasoning/thinking content from message extras."""
+        extra = message.get("extra", {})
+        if not extra or "response" not in extra:
+            return None
+        
+        response = extra.get("response", {})
+        choices = response.get("choices", [])
+        if not choices:
+            return None
+        
+        msg_data = choices[0].get("message", {})
+        
+        if "reasoning_content" in msg_data:
+            reasoning = msg_data["reasoning_content"]
+            if reasoning:
+                return str(reasoning)
+        
+        provider_fields = msg_data.get("provider_specific_fields", {})
+        if "reasoning_content" in provider_fields:
+            reasoning = provider_fields["reasoning_content"]
+            if reasoning:
+                return str(reasoning)
+        
+        return None
+
+    def _extract_tool_calls(self, message: dict) -> list[dict] | None:
+        """Extract tool calls from message extras."""
+        extra = message.get("extra", {})
+        if not extra or "response" not in extra:
+            return None
+        
+        response = extra.get("response", {})
+        choices = response.get("choices", [])
+        if not choices:
+            return None
+        
+        msg_data = choices[0].get("message", {})
+        tool_calls = msg_data.get("tool_calls")
+        
+        if tool_calls and isinstance(tool_calls, list) and len(tool_calls) > 0:
+            return tool_calls
+        
+        return None
+
+    def _format_tool_calls(self, tool_calls: list[dict]) -> str:
+        """Format tool calls for display."""
+        lines = []
+        for tc in tool_calls:
+            if tc.get("type") == "function":
+                func = tc.get("function", {})
+                name = func.get("name", "unknown")
+                args = func.get("arguments", "")
+                lines.append(f"🔧 Tool Call: {name}")
+                lines.append(f"   Arguments: {args}")
+            else:
+                lines.append(f"🔧 Tool Call: {tc}")
+        return "\n".join(lines)
+
     def update_content(self) -> None:
         container = self.query_one("#content", Vertical)
         container.remove_children()
@@ -362,14 +421,37 @@ class TextualAgent(App):
             return
 
         for message in items[self.i_step]:
+            # Extract main content
             if isinstance(message["content"], list):
                 content_str = "\n".join([item["text"] for item in message["content"]])
             else:
                 content_str = str(message["content"])
+            
             message_container = Vertical(classes="message-container")
             container.mount(message_container)
             role = message["role"].replace("assistant", "mini-swe-agent")
             message_container.mount(Static(role.upper(), classes="message-header"))
+            
+            # For assistant messages, try to extract reasoning and tool calls
+            if message.get("role") == "assistant":
+                # Display reasoning content if available
+                reasoning = self._extract_reasoning_content(message)
+                if reasoning and reasoning.strip():
+                    reasoning_header = Static("🧠 THINKING", classes="message-header reasoning-header")
+                    message_container.mount(reasoning_header)
+                    reasoning_text = Text(reasoning, no_wrap=False)
+                    message_container.mount(Static(reasoning_text, classes="message-content reasoning-content"))
+                
+                # Display tool calls if available
+                tool_calls = self._extract_tool_calls(message)
+                if tool_calls:
+                    tool_calls_str = self._format_tool_calls(tool_calls)
+                    tool_header = Static("⚡ TOOL CALLS", classes="message-header tool-header")
+                    message_container.mount(tool_header)
+                    tool_text = Text(tool_calls_str, no_wrap=False)
+                    message_container.mount(Static(tool_text, classes="message-content tool-content"))
+            
+            # Display main content
             message_container.mount(Static(Text(content_str, no_wrap=False), classes="message-content"))
 
         if self.input_container.pending_prompt is not None:

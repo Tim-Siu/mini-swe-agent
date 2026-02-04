@@ -65,6 +65,25 @@ Footer {
     color: $warning;
 }
 
+.reasoning-header {
+    color: $success;
+    margin-top: 1;
+}
+
+.reasoning-content {
+    color: $text-muted;
+    text-style: dim;
+}
+
+.tool-header {
+    color: $warning;
+    margin-top: 1;
+}
+
+.tool-content {
+    color: $text;
+}
+
 .message-content {
     margin-top: 1;
     padding: 0 1;
