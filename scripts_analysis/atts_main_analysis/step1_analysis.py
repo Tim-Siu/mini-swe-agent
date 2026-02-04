@@ -129,68 +129,71 @@ def load_atts_data(atts_dir: Path) -> Dict[int, dict]:
     return atts_data
 
 
-def compute_majority_vote(responses: List[dict], k: int, seed: int) -> Tuple[bool, int]:
+def compute_majority_vote_mc(
+    responses: List[dict],
+    k: int,
+    seed: int,
+    num_samples: int = 100,
+) -> float:
     """
-    Compute majority voting accuracy for k samples.
+    Estimate majority voting accuracy for k samples via Monte Carlo.
     
     Returns:
-        (is_correct, actual_k) - actual_k may be less than k if not enough responses
+        Estimated accuracy in [0, 1].
     """
     if not responses:
-        return False, 0
+        return 0.0
     
-    actual_k = min(k, len(responses))
-    
-    # Sample k responses (deterministic with seed)
+    if len(responses) < k:
+        raise ValueError(f"Not enough responses for k={k}: have {len(responses)}")
+
     rng = random.Random(seed)
-    sampled = rng.sample(responses, actual_k)
+    correct_count = 0
+    for _ in range(num_samples):
+        sampled = rng.sample(responses, k)
+        
+        answer_groups = defaultdict(list)
+        for r in sampled:
+            answer_groups[r["pred_answer"]].append(r)
+        
+        if not answer_groups:
+            continue
+        
+        max_count = max(len(group) for group in answer_groups.values())
+        majority_groups = [group for group in answer_groups.values() if len(group) == max_count]
+        
+        majority_group = rng.choice(majority_groups)
+        if majority_group[0]["label"]:
+            correct_count += 1
     
-    # Group by predicted answer
-    answer_groups = defaultdict(list)
-    for r in sampled:
-        answer_groups[r["pred_answer"]].append(r)
-    
-    if not answer_groups:
-        return False, actual_k
-    
-    # Find majority (max count)
-    max_count = max(len(group) for group in answer_groups.values())
-    majority_groups = [group for group in answer_groups.values() if len(group) == max_count]
-    
-    # Random tie-breaking
-    rng = random.Random(seed)
-    majority_group = rng.choice(majority_groups)
-    
-    # Return correctness of majority answer
-    return majority_group[0]["label"], actual_k
+    return correct_count / num_samples if num_samples > 0 else 0.0
 
 
-def compute_pass_at_k(responses: List[dict], k: int) -> Tuple[bool, int]:
+def compute_pass_at_k_estimator(responses: List[dict], k: int) -> float:
     """
-    Compute pass@k (whether any of k samples is correct).
+    Estimate pass@k over all rollouts using the standard estimator.
     
     Returns:
-        (is_correct, actual_k)
+        Estimated accuracy in [0, 1].
     """
-    if not responses:
-        return False, 0
+    n = len(responses)
+    if n == 0:
+        return 0.0
+    if n < k:
+        raise ValueError(f"Not enough responses for k={k}: have {n}")
     
-    actual_k = min(k, len(responses))
+    c = sum(1 for r in responses if r.get("label"))
+    if n - c < k:
+        return 1.0
     
-    # Check if any of the first k responses is correct
-    # (assuming responses are already shuffled in the rollout)
-    for i in range(actual_k):
-        if responses[i]["label"]:
-            return True, actual_k
-    
-    return False, actual_k
+    return 1.0 - np.prod(1.0 - k / np.arange(n - c + 1, n + 1))
 
 
 def compute_metrics_for_k(
     data_by_question: Dict[int, List[dict]],
     k: int,
     seed: int,
-) -> Tuple[float, float, Dict[int, bool], Dict[int, bool]]:
+) -> Tuple[float, float, Dict[int, float], Dict[int, float]]:
     """
     Compute majority vote and pass@k metrics for a given k.
     
@@ -202,11 +205,11 @@ def compute_metrics_for_k(
     
     for qid, responses in data_by_question.items():
         # Majority vote
-        maj_correct, _ = compute_majority_vote(responses, k, seed)
+        maj_correct = compute_majority_vote_mc(responses, k, seed)
         maj_results[qid] = maj_correct
         
         # Pass@k
-        pass_correct, _ = compute_pass_at_k(responses, k)
+        pass_correct = compute_pass_at_k_estimator(responses, k)
         pass_results[qid] = pass_correct
     
     maj_acc = np.mean(list(maj_results.values())) if maj_results else 0.0

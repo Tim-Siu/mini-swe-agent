@@ -7,7 +7,8 @@ Compares accuracy vs cost (budget) for:
 - Pass@k (best-of-k)
 - ATTS Agent (adaptive test-time scaling)
 
-Cost is calculated using token counts with cache pricing.
+Cost is calculated using token counts with cache pricing for the orchestrator,
+and output-only pricing for rollout generations.
 """
 
 import argparse
@@ -38,12 +39,6 @@ def parse_args():
         required=True,
         nargs="+",
         help="Path(s) to rollout JSONL files",
-    )
-    parser.add_argument(
-        "--token-counts-files",
-        required=True,
-        nargs="+",
-        help="Path(s) to token counts JSON files (corresponding to rollout files)",
     )
     parser.add_argument(
         "--atts-dir",
@@ -107,24 +102,32 @@ def load_rollout_data(rollout_files: List[str]) -> Dict[int, List[dict]]:
     return dict(data_by_question)
 
 
-def load_token_counts(token_counts_files: List[str]) -> Dict[int, List[int]]:
-    """Load token counts grouped by question_id."""
-    tokens_by_question = defaultdict(list)
-    
-    for filepath in token_counts_files:
-        path = Path(filepath)
-        if not path.exists():
-            raise FileNotFoundError(f"Token counts file not found: {filepath}")
-        
-        with open(path) as f:
-            data = json.load(f)
-        
-        for record in data.get("records", []):
-            qid = record["question_id"]
-            token_count = record.get("post_think_token_count", 0)
-            tokens_by_question[qid].append(token_count)
-    
-    return dict(tokens_by_question)
+def build_rollout_tokens_by_question(
+    data_by_question: Dict[int, List[dict]]
+) -> Dict[int, List[int]]:
+    """Extract response_token_count from rollout data grouped by question_id."""
+    tokens_by_question = {}
+    for qid, responses in data_by_question.items():
+        token_counts: List[int] = []
+        for idx, r in enumerate(responses):
+            if "response_token_count" not in r:
+                raise KeyError(
+                    f"Missing response_token_count for question_id={qid} (index={idx})"
+                )
+            raw_count = r.get("response_token_count")
+            try:
+                token_count = int(raw_count)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"Invalid response_token_count for question_id={qid} (index={idx}): {raw_count!r}"
+                ) from None
+            if token_count <= 0:
+                raise ValueError(
+                    f"Non-positive response_token_count for question_id={qid} (index={idx}): {token_count}"
+                )
+            token_counts.append(token_count)
+        tokens_by_question[qid] = token_counts
+    return tokens_by_question
 
 
 def load_atts_data(atts_dir: Path, tokens_by_question: Dict[int, List[int]]) -> Dict[int, dict]:
@@ -190,8 +193,15 @@ def load_atts_data(atts_dir: Path, tokens_by_question: Dict[int, List[int]]) -> 
         
         # Calculate rollout cost for the sampled responses
         # ATTS agent samples 'subagent_count' responses from the rollout pool
-        rollout_tokens = tokens_by_question.get(qid, [])
-        sampled_rollout_tokens = sum(rollout_tokens[:subagent_count]) if rollout_tokens else 0
+        if qid not in tokens_by_question:
+            raise KeyError(f"Missing rollout tokens for question_id={qid}")
+        rollout_tokens = tokens_by_question[qid]
+        if subagent_count > len(rollout_tokens):
+            raise ValueError(
+                f"Not enough rollouts for question_id={qid}: "
+                f"need {subagent_count}, have {len(rollout_tokens)}"
+            )
+        sampled_rollout_tokens = sum(rollout_tokens[:subagent_count]) if subagent_count > 0 else 0
         
         atts_data[qid] = {
             "question_id": qid,
@@ -238,42 +248,22 @@ def compute_rollout_cost_for_k(
     """
     Compute total cost for rollout with k samples per question.
     
-    For rollout, we assume:
-    - Input tokens: proportional to the output tokens (using a ratio)
-    - Cache is used (we have max_prompt and cache calculations)
-    
-    Actually, for rollout, we only have output token counts. We need to estimate
-    input tokens. Looking at the ATTS analysis, the input tokens are typically
-    much larger than output tokens (due to long prompts).
-    
-    For simplicity, we'll use a ratio based on the ATTS data or use a fixed ratio.
+    For rollout, we only use output token counts from response_token_count
+    in the rollout JSONL (no input token cost). Cost is scaled by k/n to
+    represent the expected cost of sampling k from n.
     """
     total_cost = 0.0
     
     for qid, token_counts in tokens_by_question.items():
-        # Use first k token counts for this question
-        actual_k = min(k, len(token_counts))
+        if len(token_counts) < k:
+            raise ValueError(
+                f"Not enough rollouts for question_id={qid}: need {k}, have {len(token_counts)}"
+            )
         
-        # For rollout cost calculation:
-        # We only have output token counts from the token_counts.json
-        # We need to estimate input tokens. Based on ATTS data, input is typically
-        # 5-10x output. Let's use a conservative estimate.
-        
-        # Actually, let's use the response_token_count from rollout data
-        # which we loaded separately
-        total_output_tokens = sum(token_counts[:actual_k])
-        
-        # Estimate input tokens: for each generation, input is roughly the same
-        # (the prompt). Let's estimate based on typical prompt length.
-        # From ATTS data, max_prompt_tokens is typically 5000-20000
-        # For a fair comparison, we should use actual data if available
-        # For now, estimate input as 1x output (conservative for cost)
-        estimated_input_per_gen = 5000  # Conservative estimate
-        max_input = estimated_input_per_gen
-        total_input = estimated_input_per_gen * actual_k
-        cache_tokens = total_input - max_input
-        
-        cost = compute_price(max_input, cache_tokens, total_output_tokens, pricing)
+        total_output_tokens = sum(token_counts)
+        scaled_output_tokens = total_output_tokens * (k / len(token_counts))
+
+        cost = compute_price(0, 0, scaled_output_tokens, pricing)
         total_cost += cost
     
     return total_cost
@@ -302,67 +292,63 @@ def compute_atts_cost(
         )
         orchestrator_cost += orch_cost
         
-        # Sampled rollout cost (no cache for rollout responses)
-        # Estimate: each sampled response has ~5000 input tokens (prompt)
-        # and the output tokens from token_counts
+        # Sampled rollout cost uses output-only tokens from response_token_count
         sampled_tokens = data["sampled_rollout_tokens"]
         if sampled_tokens > 0:
-            # Estimate input tokens per response (conservative)
-            input_per_response = 5000
-            num_samples = data["subagent_count"]
-            total_input = input_per_response * num_samples
-            max_input = input_per_response
-            cache_tokens = total_input - max_input
-            
-            roll_cost = compute_price(
-                max_input,
-                cache_tokens,
-                sampled_tokens,
-                pricing,
-            )
+            roll_cost = compute_price(0, 0, sampled_tokens, pricing)
             rollout_cost += roll_cost
     
     total_cost = orchestrator_cost + rollout_cost
     return total_cost, orchestrator_cost, rollout_cost
 
 
-def compute_majority_vote(responses: List[dict], k: int, seed: int) -> bool:
-    """Compute majority voting accuracy for k samples."""
+def compute_majority_vote_mc(
+    responses: List[dict],
+    k: int,
+    seed: int,
+    num_samples: int = 100,
+) -> float:
+    """Estimate majority voting accuracy for k samples via Monte Carlo."""
     if not responses:
-        return False
-    
-    actual_k = min(k, len(responses))
-    rng = random.Random(seed)
-    sampled = rng.sample(responses, actual_k)
-    
-    answer_groups = defaultdict(list)
-    for r in sampled:
-        answer_groups[r["pred_answer"]].append(r)
-    
-    if not answer_groups:
-        return False
-    
-    max_count = max(len(group) for group in answer_groups.values())
-    majority_groups = [group for group in answer_groups.values() if len(group) == max_count]
+        return 0.0
+    if len(responses) < k:
+        raise ValueError(f"Not enough responses for k={k}: have {len(responses)}")
     
     rng = random.Random(seed)
-    majority_group = rng.choice(majority_groups)
+    correct_count = 0
+    for _ in range(num_samples):
+        sampled = rng.sample(responses, k)
+        
+        answer_groups = defaultdict(list)
+        for r in sampled:
+            answer_groups[r["pred_answer"]].append(r)
+        
+        if not answer_groups:
+            continue
+        
+        max_count = max(len(group) for group in answer_groups.values())
+        majority_groups = [group for group in answer_groups.values() if len(group) == max_count]
+        
+        majority_group = rng.choice(majority_groups)
+        if majority_group[0]["label"]:
+            correct_count += 1
     
-    return majority_group[0]["label"]
+    return correct_count / num_samples if num_samples > 0 else 0.0
 
 
-def compute_pass_at_k(responses: List[dict], k: int) -> bool:
-    """Compute pass@k (whether any of k samples is correct)."""
-    if not responses:
-        return False
+def compute_pass_at_k_estimator(responses: List[dict], k: int) -> float:
+    """Estimate pass@k over all rollouts using the standard estimator."""
+    n = len(responses)
+    if n == 0:
+        return 0.0
+    if n < k:
+        raise ValueError(f"Not enough responses for k={k}: have {n}")
     
-    actual_k = min(k, len(responses))
+    c = sum(1 for r in responses if r.get("label"))
+    if n - c < k:
+        return 1.0
     
-    for i in range(actual_k):
-        if responses[i]["label"]:
-            return True
-    
-    return False
+    return 1.0 - np.prod(1.0 - k / np.arange(n - c + 1, n + 1))
 
 
 def compute_metrics_for_k(
@@ -375,8 +361,8 @@ def compute_metrics_for_k(
     pass_results = []
     
     for qid, responses in data_by_question.items():
-        maj_results.append(compute_majority_vote(responses, k, seed))
-        pass_results.append(compute_pass_at_k(responses, k))
+        maj_results.append(compute_majority_vote_mc(responses, k, seed))
+        pass_results.append(compute_pass_at_k_estimator(responses, k))
     
     maj_acc = np.mean(maj_results) if maj_results else 0.0
     pass_acc = np.mean(pass_results) if pass_results else 0.0
@@ -530,9 +516,17 @@ def main():
     data_by_question = load_rollout_data(args.rollout_files)
     print(f"   Loaded {len(data_by_question)} questions")
     
-    print("\n2. Loading token counts...")
-    tokens_by_question = load_token_counts(args.token_counts_files)
-    print(f"   Loaded token counts for {len(tokens_by_question)} questions")
+    print("\n2. Extracting rollout token counts...")
+    tokens_by_question = build_rollout_tokens_by_question(data_by_question)
+    print(f"   Extracted rollout token counts for {len(tokens_by_question)} questions")
+    
+    if k_values:
+        max_k = max(k_values)
+        for qid, token_counts in tokens_by_question.items():
+            if len(token_counts) < max_k:
+                raise ValueError(
+                    f"Not enough rollouts for question_id={qid}: need {max_k}, have {len(token_counts)}"
+                )
     
     print("\n3. Loading ATTS agent data...")
     atts_data = load_atts_data(args.atts_dir, tokens_by_question)

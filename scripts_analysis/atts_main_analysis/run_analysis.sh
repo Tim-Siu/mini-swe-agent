@@ -20,12 +20,6 @@ ROLLOUT_FILES=(
     "/Users/tim/Documents/research/trustworthy/output_rollouts/glm-4p7/hle_integer_100-test-temp_1.0-top_p_0.95-top_k_-1-seed_4-thinking-20260124-020401_seed_4.jsonl"
 )
 
-# Token counts files (corresponding to rollout files)
-TOKEN_COUNTS_FILES=(
-    "/Users/tim/Documents/research/trustworthy/output_rollouts/glm-4p7/hle_integer_100-test-temp_1.0-top_p_0.95-top_k_-1-seed_0-thinking-20260122-233312_seed_0.jsonl.token_counts.json"
-    "/Users/tim/Documents/research/trustworthy/output_rollouts/glm-4p7/hle_integer_100-test-temp_1.0-top_p_0.95-top_k_-1-seed_4-thinking-20260124-020401_seed_4.jsonl.token_counts.json"
-)
-
 # K values to evaluate
 K_VALUES="1,2,4,8,16,32,64"
 
@@ -68,7 +62,6 @@ echo "Step 2: Cost-based Comparison"
 echo "================================================================================"
 $PYTHON "$SCRIPT_DIR/step2_cost_analysis.py" \
     --rollout-files "${ROLLOUT_FILES[@]}" \
-    --token-counts-files "${TOKEN_COUNTS_FILES[@]}" \
     --atts-dir "$ATTS_DIR" \
     --output-dir "$OUTPUT_DIR" \
     --k-values "$K_VALUES" \
