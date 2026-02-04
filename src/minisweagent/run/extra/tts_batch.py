@@ -30,12 +30,36 @@ to solve problems through intelligent consensus.
 
 Example:
     mini-extra tts-batch responses.jsonl output/ --workers 4
+
+Resume / rerun tips:
+    - Default behavior skips any question already present in output/preds.json
+    - To rerun previously-failed questions while skipping successful + early-stopped:
+        mini-extra tts-batch responses.jsonl output/ --resume-failed
+    - To rerun only a specific failure type recorded in preds.json:
+        mini-extra tts-batch responses.jsonl output/ --only-exit-status NotFoundError
 [/not dim]
 """
 
 app = typer.Typer(rich_markup_mode="rich", add_completion=False)
 
 _OUTPUT_FILE_LOCK = threading.Lock()
+
+
+def _split_csv(values: list[str]) -> list[str]:
+    out: list[str] = []
+    for v in values:
+        for part in v.split(","):
+            part = part.strip()
+            if part:
+                out.append(part)
+    return out
+
+
+def _load_existing_preds(output_dir: Path) -> dict[str, dict]:
+    preds_path = output_dir / "preds.json"
+    if not preds_path.exists():
+        return {}
+    return json.loads(preds_path.read_text())
 
 
 def create_progress_tracking_agent_class(base_class):
@@ -220,6 +244,21 @@ def main(
     seed: int = typer.Option(42, "-s", "--seed", help="Random seed for response sampling"),
     model: str | None = typer.Option(None, "-m", "--model", help="Override model name"),
     redo_existing: bool = typer.Option(False, "--redo-existing", help="Redo existing questions"),
+    resume_failed: bool = typer.Option(
+        False,
+        "--resume-failed",
+        help="Resume by rerunning non-success statuses in preds.json (skips Submitted + early_stopped)",
+    ),
+    skip_exit_status: list[str] = typer.Option(
+        [],
+        "--skip-exit-status",
+        help="When resuming with preds.json, skip questions whose exit_status matches (repeatable or comma-separated)",
+    ),
+    only_exit_status: list[str] = typer.Option(
+        [],
+        "--only-exit-status",
+        help="Only process questions whose existing preds.json exit_status matches (repeatable or comma-separated)",
+    ),
     force_budget: int | None = typer.Option(None, "--force-budget", help="Force agent to spawn N agents in first turn"),
 ) -> None:
     # fmt: on
@@ -230,6 +269,9 @@ def main(
     logger.info(f"Results will be saved to {output_dir}")
     add_file_handler(output_dir / "tts_batch.log")
 
+    skip_exit_statuses = set(_split_csv(skip_exit_status))
+    only_exit_statuses = set(_split_csv(only_exit_status))
+
     # Load response pool
     logger.info(f"Loading response pool from {response_jsonl}...")
     response_pool = ResponsePool(response_jsonl, seed=seed)
@@ -239,14 +281,46 @@ def main(
     available_ids = response_pool.get_question_ids()
     qids = parse_question_ids(question_ids, available_ids)
 
-    # Skip existing if not redoing
-    if not redo_existing and (output_dir / "preds.json").exists():
-        existing = json.loads((output_dir / "preds.json").read_text())
-        existing_ids = {int(k) for k in existing.keys()}
+    existing = _load_existing_preds(output_dir)
+    existing_ids = {int(k) for k in existing.keys()}
+
+    if only_exit_statuses:
+        if not existing:
+            raise typer.BadParameter("--only-exit-status requires an existing preds.json in the output dir")
         before = len(qids)
-        qids = [q for q in qids if q not in existing_ids]
-        if len(qids) != before:
-            logger.info(f"Skipping {before - len(qids)} existing questions")
+        qids = [
+            q
+            for q in qids
+            if str(q) in existing and existing[str(q)].get("exit_status") in only_exit_statuses
+        ]
+        logger.info(f"Selected {len(qids)}/{before} questions with exit_status in {sorted(only_exit_statuses)}")
+
+    redo_existing_effective = redo_existing or bool(only_exit_statuses)
+
+    # Skip existing if not redoing
+    if not redo_existing_effective and existing:
+        if resume_failed and skip_exit_statuses:
+            raise typer.BadParameter("--resume-failed cannot be combined with --skip-exit-status")
+
+        if resume_failed:
+            skip_exit_statuses = {"Submitted", "early_stopped"}
+
+        if skip_exit_statuses:
+            before = len(qids)
+            qids = [
+                q
+                for q in qids
+                if not (str(q) in existing and existing[str(q)].get("exit_status") in skip_exit_statuses)
+            ]
+            if len(qids) != before:
+                logger.info(
+                    f"Skipping {before - len(qids)} existing questions with exit_status in {sorted(skip_exit_statuses)}"
+                )
+        else:
+            before = len(qids)
+            qids = [q for q in qids if q not in existing_ids]
+            if len(qids) != before:
+                logger.info(f"Skipping {before - len(qids)} existing questions")
 
     if not qids:
         logger.info("No questions to process")
