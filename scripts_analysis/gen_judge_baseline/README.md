@@ -93,6 +93,9 @@ python step2_analyze.py \
 - `--max_input_tokens`: Token budget for filtering after sampling
 - `--dry_run`: Compute stats without API calls
 - `--model`: LiteLLM model name (default: `zhipuai/public-glm-4.7`)
+- `--retry`: Retry failed API calls from existing results
+- `--max-retries`: Maximum retry attempts per API call (default: 5)
+- `--concurrency`: Number of concurrent API calls (default: 1)
 
 ## Output Directory Naming
 
@@ -126,6 +129,38 @@ These use the token-based selection from the original baseline and are documente
 ## Retry Logic
 
 The LiteLLM backend is configured with:
-- Maximum 3 retry attempts (hardcoded)
-- Exponential backoff (1x multiplier, 4-60s range)
+- Maximum 5 retry attempts per API call (configurable via `--max-retries`)
+- Exponential backoff (1s, 2s, 4s, 8s, 16s delays)
 - Specific exceptions that don't trigger retry (auth errors, context window exceeded, etc.)
+
+### Retry Mode for Failed Questions
+
+If some API calls fail during a run, you can retry only the failed questions without re-processing successful ones:
+
+```bash
+# Retry failed questions for a specific experiment
+python step1_gen_judge.py \
+    --pool_path "/path/to/rollouts/*.jsonl" \
+    --output_dir "./results" \
+    --k 16 \
+    --mode non-dedup \
+    --seed 42 \
+    --comment c131k \
+    --retry
+
+# Using the batch launch script with retry mode
+RETRY=1 ./launch_batch_experiments.sh
+RETRY=1 ./launch_batch_experiments_nondedup.sh
+```
+
+**How it works:**
+- Loads existing `results_per_question.json` and identifies questions with `api_success: false`
+- Regenerates prompts for failed questions only (using same seed for consistent sampling)
+- Re-calls API for failed questions
+- Merges new results with existing successful results
+- Rewrites output files with updated statistics
+
+**Notes:**
+- Safe to run multiple times (idempotent)
+- Won't re-process already successful questions
+- If no failures found, exits with "Nothing to retry"

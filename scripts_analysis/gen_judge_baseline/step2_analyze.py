@@ -139,8 +139,11 @@ def generate_report(all_results: list[dict]) -> str:
     grouped = defaultdict(list)
     for r in all_results:
         parsed = parse_run_name(r['name'])
-        k = parsed.get('k', 'unknown')
+        k = parsed.get('k')
         mode = parsed.get('mode', 'unknown')
+        # Skip directories that don't start with 'k' (k is None when parsing fails)
+        if k is None:
+            continue
         grouped[(k, mode)].append(r)
     
     # Summary table
