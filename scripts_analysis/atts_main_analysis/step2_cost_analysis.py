@@ -272,34 +272,57 @@ def compute_rollout_cost_for_k(
 def compute_atts_cost(
     atts_data: Dict[int, dict],
     pricing: Dict[str, float],
-) -> Tuple[float, float, float]:
+) -> Tuple[float, float, float, int, int]:
     """
     Compute total cost for ATTS agent.
     
+    For early stopped questions, we calculate the average cost per non-early-stopped
+    question and extrapolate to all questions. This gives the expected cost if
+    early stopping were not used.
+    
     Returns:
-        (total_cost, orchestrator_cost, rollout_cost)
+        (total_cost, orchestrator_cost, rollout_cost, non_early_stop_count, total_count)
     """
-    orchestrator_cost = 0.0
-    rollout_cost = 0.0
+    orchestrator_cost_non_early = 0.0
+    rollout_cost_non_early = 0.0
+    non_early_stop_count = 0
+    total_count = len(atts_data)
     
     for qid, data in atts_data.items():
-        # Orchestrator agent cost (with cache)
-        orch_cost = compute_price(
-            data["max_prompt_tokens"],
-            data["input_cache_tokens"],
-            data["total_completion_tokens"],
-            pricing,
-        )
-        orchestrator_cost += orch_cost
+        # Check if early stopped
+        is_early_stopped = data.get("exit_status") == "early_stopped"
         
-        # Sampled rollout cost uses output-only tokens from response_token_count
-        sampled_tokens = data["sampled_rollout_tokens"]
-        if sampled_tokens > 0:
-            roll_cost = compute_price(0, 0, sampled_tokens, pricing)
-            rollout_cost += roll_cost
+        if not is_early_stopped:
+            # Orchestrator agent cost (with cache)
+            orch_cost = compute_price(
+                data["max_prompt_tokens"],
+                data["input_cache_tokens"],
+                data["total_completion_tokens"],
+                pricing,
+            )
+            orchestrator_cost_non_early += orch_cost
+            
+            # Sampled rollout cost uses output-only tokens from response_token_count
+            sampled_tokens = data["sampled_rollout_tokens"]
+            if sampled_tokens > 0:
+                roll_cost = compute_price(0, 0, sampled_tokens, pricing)
+                rollout_cost_non_early += roll_cost
+            
+            non_early_stop_count += 1
+    
+    # Extrapolate to all questions
+    if non_early_stop_count > 0:
+        extrapolation_factor = total_count / non_early_stop_count
+        orchestrator_cost = orchestrator_cost_non_early * extrapolation_factor
+        rollout_cost = rollout_cost_non_early * extrapolation_factor
+    else:
+        # All questions are early stopped - this is an error condition
+        orchestrator_cost = 0.0
+        rollout_cost = 0.0
+        print(f"WARNING: All {total_count} questions are early stopped. Cannot calculate cost.")
     
     total_cost = orchestrator_cost + rollout_cost
-    return total_cost, orchestrator_cost, rollout_cost
+    return total_cost, orchestrator_cost, rollout_cost, non_early_stop_count, total_count
 
 
 def compute_majority_vote_mc(
@@ -458,6 +481,8 @@ def save_results(
     agent_orch_cost: float,
     agent_rollout_cost: float,
     run_name: str,
+    non_early_stop_count: int = 0,
+    total_count: int = 0,
 ):
     """Save numerical results to JSON."""
     results = {
@@ -476,6 +501,9 @@ def save_results(
             "accuracy": agent_accuracy,
             "orchestrator_cost": agent_orch_cost,
             "rollout_cost": agent_rollout_cost,
+            "non_early_stop_count": non_early_stop_count,
+            "total_count": total_count,
+            "early_stop_rate": (total_count - non_early_stop_count) / total_count if total_count > 0 else 0,
         },
     }
     
@@ -535,9 +563,10 @@ def main():
     # Compute ATTS agent metrics
     print("\n4. Computing ATTS agent metrics...")
     agent_accuracy = compute_atts_agent_accuracy(atts_data)
-    agent_budget, agent_orch_cost, agent_rollout_cost = compute_atts_cost(atts_data, pricing)
+    agent_budget, agent_orch_cost, agent_rollout_cost, non_early_count, total_count = compute_atts_cost(atts_data, pricing)
     print(f"   Agent accuracy: {agent_accuracy:.3f}")
-    print(f"   Agent total budget: ${agent_budget:.4f}")
+    print(f"   Non-early-stopped questions: {non_early_count}/{total_count}")
+    print(f"   Agent total budget (extrapolated): ${agent_budget:.4f}")
     print(f"     - Orchestrator cost: ${agent_orch_cost:.4f}")
     print(f"     - Sampled rollout cost: ${agent_rollout_cost:.4f}")
     
@@ -590,6 +619,8 @@ def main():
         agent_orch_cost,
         agent_rollout_cost,
         run_name,
+        non_early_count,
+        total_count,
     )
     
     print("\n" + "=" * 80)
