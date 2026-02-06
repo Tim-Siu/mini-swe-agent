@@ -243,31 +243,19 @@ def _evaluate_one(row: Dict[str, Any], args: argparse.Namespace, extra_body: Opt
         if original_answer != "":
             agreement = _safe_math_equal(answer, original_answer)
 
+        # Runtime logging of token stats
         usage = response.get("usage", {}) or {}
         prompt_tokens = usage.get("prompt_tokens", 0) or 0
         completion_tokens = usage.get("completion_tokens", 0) or 0
-        
-        # Runtime logging of token stats
         logging.info(f"Q{qid}: prompt={prompt_tokens}, completion={completion_tokens}")
-
-        # Extract reasoning_content from response (for models like GLM that provide it)
-        reasoning_content = None
-        try:
-            reasoning_content = response["choices"][0]["message"].get("reasoning_content")
-        except (KeyError, IndexError, TypeError):
-            pass
 
         return {
             "question_id": qid,
             "status": "ok",
-            "response_text": text,
-            "reasoning_content": reasoning_content,
+            "api_response": response,
             "answer": answer,
             "correct": correct,
             "agreement_with_original": agreement,
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": usage.get("total_tokens"),
             "latency_sec": elapsed,
             "original_answer": original_answer,
             "gold": gold,
@@ -394,6 +382,15 @@ def main() -> None:
         if r.get("agreement_with_original") is not None
     ])
 
+    # Extract token counts from api_response
+    def _get_tokens(record, token_type):
+        """Extract token count from api_response."""
+        api_resp = record.get("api_response")
+        if not api_resp:
+            return 0
+        usage = api_resp.get("usage", {})
+        return usage.get(f"{token_type}_tokens", 0) or 0
+
     summary = {
         "model": args.model,
         "temperature": args.temperature,
@@ -409,9 +406,9 @@ def main() -> None:
         "accuracy_evaluated": acc_evaluated,
         "accuracy_overall": acc_overall,
         "agreement_rate": agree_rate,
-        "avg_prompt_tokens": mean([r.get("prompt_tokens", 0) or 0 for r in evaluated]),
-        "avg_completion_tokens": mean([r.get("completion_tokens", 0) or 0 for r in evaluated]),
-        "avg_total_tokens": mean([r.get("total_tokens", 0) or 0 for r in evaluated]),
+        "avg_prompt_tokens": mean([_get_tokens(r, "prompt") for r in evaluated]),
+        "avg_completion_tokens": mean([_get_tokens(r, "completion") for r in evaluated]),
+        "avg_total_tokens": mean([_get_tokens(r, "total") for r in evaluated]),
     }
     (output_dir / "compact_eval_summary.json").write_text(json.dumps(summary, indent=2))
 

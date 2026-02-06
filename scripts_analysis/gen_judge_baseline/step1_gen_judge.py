@@ -474,36 +474,19 @@ def process_single_question(
             question_id=qid,
             max_retries=max_retries,
         )
-        judge_content = response.choices[0].message.content or ""
         api_success = True
-        
-        # Extract token usage from response
-        usage = getattr(response, 'usage', {}) or {}
-        prompt_tokens = usage.get('prompt_tokens', 0) or 0
-        completion_tokens = usage.get('completion_tokens', 0) or 0
-        total_tokens = usage.get('total_tokens', 0) or (prompt_tokens + completion_tokens)
-        
-        # Extract reasoning_content (for models like GLM that provide it)
-        reasoning_content = None
-        try:
-            reasoning_content = response.choices[0].message.get('reasoning_content')
-        except (KeyError, IndexError, TypeError, AttributeError):
-            pass
         
     except Exception as e:
         logger.warning(f"API call failed for question {qid}: {e}")
         api_success = False
-        judge_content = ""
-        prompt_tokens = 0
-        completion_tokens = 0
-        total_tokens = 0
-        reasoning_content = None
+        response = None
     
     # Calculate latency
     latency_sec = time.time() - start_time
     
     # Parse response
     if api_success:
+        judge_content = response.choices[0].message.content or ""
         choice_idx, parse_failed = parse_judge_choice(
             judge_content,
             len(sampled),
@@ -536,13 +519,12 @@ def process_single_question(
         'gold_answer': gold_answer,
     }
     
-    # Build trace record (aligned with compact context format)
+    # Build trace record with complete api_response
     trace_record = {
         'question_id': qid,
         'status': 'ok' if api_success else 'error',
         'prompt': prompt,
-        'response_text': judge_content if api_success else None,
-        'reasoning_content': reasoning_content,
+        'api_response': response.model_dump() if api_success else None,
         'candidates': [
             {
                 'idx': i,
@@ -553,9 +535,6 @@ def process_single_question(
             for i, (resp, _) in enumerate(sampled)
         ],
         'result': result,
-        'prompt_tokens': prompt_tokens,
-        'completion_tokens': completion_tokens,
-        'total_tokens': total_tokens,
         'latency_sec': latency_sec,
     }
     
