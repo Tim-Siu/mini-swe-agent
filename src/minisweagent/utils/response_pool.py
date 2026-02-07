@@ -31,6 +31,7 @@ class ResponsePool:
         self.correct_answers: dict[int, set[str]] = defaultdict(set)  # pred_answers where label=True
         self.loaded_files: list[Path] = []
         self._load(jsonl_path)
+        self._seed = seed
         self.rng = random.Random(seed)
 
     def _resolve_paths(self, jsonl_path: str | Path | list[str | Path]) -> list[Path]:
@@ -86,12 +87,22 @@ class ResponsePool:
         self.responses = dict(self.responses)
         self.correct_answers = dict(self.correct_answers)
 
-    def sample(self, question_id: int, n: int) -> list[tuple[str, bool]]:
+    @property
+    def seed(self) -> int:
+        """The random seed used for sampling."""
+        return self._seed
+
+    def sample(
+        self, question_id: int, n: int, rng: random.Random | None = None
+    ) -> list[tuple[str, bool]]:
         """Sample n responses without replacement.
 
         Args:
             question_id: The question ID to sample responses for.
             n: Number of responses to sample.
+            rng: Optional RNG to use instead of the shared one.
+                 Use a per-question RNG for deterministic sampling
+                 regardless of thread scheduling.
 
         Returns:
             List of (response_text, label) tuples where label indicates correctness.
@@ -101,7 +112,8 @@ class ResponsePool:
 
         pool = self.responses[question_id]
         n = min(n, len(pool))
-        return self.rng.sample(pool, n)
+        _rng = rng if rng is not None else self.rng
+        return _rng.sample(pool, n)
 
     def get_question(self, question_id: int) -> str:
         """Get the question text for a given ID."""

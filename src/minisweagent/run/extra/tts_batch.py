@@ -175,7 +175,7 @@ def process_question(
         exit_status = "early_stopped"
         result = ""  # No answer since we early stopped
         extra_info = {
-            "early_stop_metadata": e.metadata,
+            "sampled_rollout_metadata": e.metadata,
             "early_stop_message": str(e),
         }
     except Exception as e:
@@ -183,6 +183,18 @@ def process_question(
         exit_status, result = type(e).__name__, str(e)
         extra_info = {"traceback": traceback.format_exc()}
     finally:
+        # Save sampled rollout metadata for non-early-stopped questions
+        if (
+            agent is not None
+            and hasattr(agent, "get_sampled_rollout_metadata")
+            and (extra_info is None or "sampled_rollout_metadata" not in extra_info)
+        ):
+            metadata = agent.get_sampled_rollout_metadata()
+            if metadata["total_budget_used"] > 0:
+                if extra_info is None:
+                    extra_info = {}
+                extra_info["sampled_rollout_metadata"] = metadata
+
         instance_dir.mkdir(parents=True, exist_ok=True)
         save_traj(
             agent,

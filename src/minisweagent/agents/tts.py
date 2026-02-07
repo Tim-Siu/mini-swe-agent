@@ -1,6 +1,8 @@
 """TTS (Test-Time Scaling) Agent for orchestrating sub-agent consensus."""
 
+import hashlib
 import json
+import random
 import re
 import shutil
 import tempfile
@@ -68,6 +70,10 @@ class TTSAgent(DefaultAgent):
         self.question_id = question_id
         self.working_dir = tempfile.mkdtemp(prefix="tts_")
         self.spawned_count = 0
+        # Per-question deterministic RNG (independent of thread scheduling)
+        self._sample_rng = random.Random(f"{response_pool.seed}_{question_id}")
+        # Accumulate metadata across subagent calls
+        self._subagent_call_log: list[dict] = []
         # Note: max_attempts is already available in templates via config.model_dump()
 
     def parse_action(self, response: dict) -> dict:
@@ -238,14 +244,32 @@ class TTSAgent(DefaultAgent):
             }
 
         # Sample responses from pool (returns list of (response_text, label) tuples)
+        # Uses per-question RNG for deterministic sampling regardless of threading
         try:
-            sampled = self.response_pool.sample(self.question_id, n)
+            sampled = self.response_pool.sample(
+                self.question_id, n, rng=self._sample_rng
+            )
         except KeyError as e:
             return {
                 "output": f"Error: {e}",
                 "returncode": 1,
                 "action": action["action"],
             }
+
+        # Log metadata before any sorting
+        call_metadata = {
+            "call_index": len(self._subagent_call_log),
+            "count": len(sampled),
+            "samples": [
+                {
+                    "response_hash": hashlib.sha256(resp.encode()).hexdigest()[:16],
+                    "extracted_answer": self._extract_answer(resp),
+                    "label": label,
+                }
+                for resp, label in sampled
+            ],
+        }
+        self._subagent_call_log.append(call_metadata)
 
         # Extract answers and pair with responses and labels
         # Format: (response_text, extracted_answer, label)
@@ -352,6 +376,23 @@ class TTSAgent(DefaultAgent):
         output = self.env.execute(action["action"], cwd=self.working_dir)
         return output | {"action": action["action"]}
 
+    def get_sampled_rollout_metadata(self) -> dict:
+        """Get accumulated metadata for all subagent calls.
+
+        Returns a dict with subagent_calls, total_budget_used,
+        sampled_answers (frequency dict), and gold_answer.
+        """
+        all_answers = []
+        for call in self._subagent_call_log:
+            for s in call["samples"]:
+                all_answers.append(s["extracted_answer"])
+        return {
+            "subagent_calls": self._subagent_call_log,
+            "total_budget_used": sum(c["count"] for c in self._subagent_call_log),
+            "sampled_answers": dict(Counter(all_answers)),
+            "gold_answer": self.response_pool.get_gold_answer(self.question_id),
+        }
+
     def cleanup(self):
         """Clean up working directory."""
         if Path(self.working_dir).exists():
@@ -441,25 +482,12 @@ class TTSAgentV11(TTSAgent):
         has_correct = any(self._sampled_labels)
 
         if not has_correct:
-            # Count answer distribution for metadata
-            sampled_answers = []
-            for i in range(self.spawned_count):
-                filepath = Path(self.working_dir) / f"{i}.txt"
-                if filepath.exists():
-                    content = filepath.read_text()
-                    answer = self._extract_answer(content)
-                    sampled_answers.append(answer)
-            answer_counts = Counter(sampled_answers)
-
-            # Raise early stop with metadata
+            # Use metadata already accumulated by parent's _execute_subagent
+            metadata = self.get_sampled_rollout_metadata()
+            metadata["early_stop_reason"] = "no_correct_answer_in_sampled_responses"
             raise EarlyStopped(
                 f"No correct answer found in {self.spawned_count} sampled responses",
-                metadata={
-                    "budget_used": self.spawned_count,
-                    "sampled_answers": dict(answer_counts),
-                    "gold_answer": self.response_pool.get_gold_answer(self.question_id),
-                    "early_stop_reason": "no_correct_answer_in_sampled_responses",
-                }
+                metadata=metadata,
             )
 
         # Now automatically generate and append stats
